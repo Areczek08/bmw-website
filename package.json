@@ -5,9 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
-    "pages:build": "npx @cloudflare/next-on-pages",
-    "preview": "npm run pages:build && wrangler pages dev .vercel/output/static",
-    "deploy": "npm run pages:build && wrangler pages deploy .vercel/output/static",
+    "pages:build": "npx @opennextjs/cloudflare build",
+    "preview": "npx @opennextjs/cloudflare preview",
+    "deploy": "npx @opennextjs/cloudflare deploy",
     "start": "next start",
     "lint": "eslint"
   },
