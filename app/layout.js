@@ -8,7 +8,7 @@ import { BugReportButton } from "./components/BugReportButton";
 import { PwaRegister } from "./components/PwaRegister";
 import { InstallPrompt } from "./components/InstallPrompt";
 import { Toaster } from "sonner";
-import { Analytics } from "@vercel/analytics/next";
+
 
 export const dynamic = "force-dynamic";
 
@@ -73,7 +73,7 @@ export default function RootLayout({ children }) {
             </div>
           </ThemeProvider>
         </AuthProvider>
-        <Analytics />
+
       </body>
     </html>
   );
