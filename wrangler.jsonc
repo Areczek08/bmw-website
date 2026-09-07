@@ -9,5 +9,11 @@
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
-  }
+  },
+  "routes": [
+    {
+      "pattern": "system.vsbojarlogistic.pl",
+      "custom_domain": true
+    }
+  ]
 }
