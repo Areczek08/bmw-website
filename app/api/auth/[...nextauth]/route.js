@@ -1,3 +1,14 @@
+if (typeof process !== "undefined") {
+  try {
+    if (!process.version || process.version === "") {
+      Object.defineProperty(process, 'version', { value: 'v20.18.0', configurable: true });
+    }
+    if (process.versions && !process.versions.node) {
+      Object.defineProperty(process.versions, 'node', { value: '20.18.0', configurable: true });
+    }
+  } catch (e) {}
+}
+
 import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { prisma } from "../../../../lib/prisma";
@@ -107,6 +118,7 @@ export const authOptions = {
   pages: {
     signIn: "/login",
   },
+  trustHost: true,
   secret: process.env.NEXTAUTH_SECRET || "VtcBMS2026_9x!2Zq$8pL#1vN@3mK_BojarSystem",
 };
 

@@ -45,3 +45,5 @@ next-env.d.ts
 .vercel
 .env*
 .open-next
+.wrangler
+test-old-db.js

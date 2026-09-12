@@ -98,7 +98,7 @@ async function parseAndInsert(row) {
 
   if (!rejestracja || rejestracja === 'REJESTRACJA' || rejestracja === 'NULL') return 'SKIP';
 
-  const status = dostepnosc ? "AVAILABLE" : "UNAVAILABLE";
+  const status = dostepnosc ? "AVAILABLE" : "MAINTENANCE";
 
   try {
     if (typ === 'NACZEPA') {
