@@ -10,9 +10,7 @@ const nextConfig = {
     "@prisma/client",
     ".prisma/client",
     "@prisma/adapter-mariadb",
-    "mariadb",
-    "jose",
-    "bcryptjs"
+    "mariadb"
   ],
 };
 

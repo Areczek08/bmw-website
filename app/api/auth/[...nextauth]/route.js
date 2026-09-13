@@ -11,8 +11,23 @@ if (typeof process !== "undefined") {
 
 import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-import { prisma } from "../../../../lib/prisma";
 import bcrypt from "bcryptjs";
+import { SignJWT, jwtVerify } from "jose";
+import mariadb from "mariadb";
+
+function getDbConfig() {
+  const url = process.env.DATABASE_URL || process.env.DATABASE_URI || "mysql://www13461_bojarsystemweb:lgeKyRxxxMF6XWKv8ALd@54.38.50.59:3306/www13461_bojarsystemweb";
+  const parsed = new URL(url.replace(/^mysql:\/\//, "http://").replace(/^mariadb:\/\//, "http://"));
+  return {
+    host: parsed.hostname,
+    port: parseInt(parsed.port || "3306", 10),
+    user: decodeURIComponent(parsed.username),
+    password: decodeURIComponent(parsed.password),
+    database: parsed.pathname.replace(/^\//, ""),
+    connectTimeout: 5000,
+    socketTimeout: 5000,
+  };
+}
 
 export const authOptions = {
   providers: [
@@ -29,18 +44,20 @@ export const authOptions = {
 
         const cleanEmail = credentials.email.trim().toLowerCase();
 
+        let conn;
         try {
-          const user = await prisma.user.findFirst({
-            where: {
-              email: { equals: cleanEmail }
-            }
-          });
+          conn = await mariadb.createConnection(getDbConfig());
+          const rows = await conn.query(
+            "SELECT id, email, name, image, password, firstName, discordNick, role, driverStatus, companyId FROM User WHERE email = ? LIMIT 1",
+            [cleanEmail]
+          );
 
+          const user = rows && rows[0];
           if (!user || !user.password) {
             return null;
           }
 
-          const isPasswordValid = await bcrypt.compare(
+          const isPasswordValid = bcrypt.compareSync(
             credentials.password,
             user.password
           );
@@ -62,14 +79,42 @@ export const authOptions = {
             companyId: user.companyId,
           };
         } catch (err) {
-          console.error("Authorize error:", err);
+          console.error("[Auth] Authorize error:", err);
           return null;
+        } finally {
+          if (conn) {
+            try { await conn.end(); } catch (e) {}
+          }
         }
       }
     })
   ],
   session: {
-    strategy: "jwt"
+    strategy: "jwt",
+    maxAge: 30 * 24 * 60 * 60,
+  },
+  jwt: {
+    maxAge: 30 * 24 * 60 * 60,
+    async encode({ secret, token, maxAge }) {
+      const secretStr = typeof secret === "string" && secret ? secret : (process.env.NEXTAUTH_SECRET || "VtcBMS2026_9x!2Zq$8pL#1vN@3mK_BojarSystem");
+      const secretKey = new TextEncoder().encode(secretStr);
+      return new SignJWT(token)
+        .setProtectedHeader({ alg: "HS256" })
+        .setIssuedAt()
+        .setExpirationTime(Math.floor(Date.now() / 1000) + (maxAge || 30 * 24 * 60 * 60))
+        .sign(secretKey);
+    },
+    async decode({ secret, token }) {
+      if (!token) return null;
+      try {
+        const secretStr = typeof secret === "string" && secret ? secret : (process.env.NEXTAUTH_SECRET || "VtcBMS2026_9x!2Zq$8pL#1vN@3mK_BojarSystem");
+        const secretKey = new TextEncoder().encode(secretStr);
+        const { payload } = await jwtVerify(token, secretKey);
+        return payload;
+      } catch (err) {
+        return null;
+      }
+    }
   },
   callbacks: {
     async jwt({ token, user, trigger, session }) {
@@ -84,19 +129,29 @@ export const authOptions = {
         token.image = (user.image && user.image.length < 500) ? user.image : null;
       }
       if (trigger === "update" && token?.id) {
-        const dbUser = await prisma.user.findUnique({
-          where: { id: token.id },
-          select: { driverStatus: true, role: true, companyId: true, firstName: true, discordNick: true, name: true, image: true }
-        });
-        if (dbUser) {
-          token.driverStatus = dbUser.driverStatus;
-          token.role = dbUser.role;
-          token.companyId = dbUser.companyId;
-          token.firstName = dbUser.firstName;
-          token.discordNick = dbUser.discordNick;
-          token.name = dbUser.name;
-          // Only store small image URLs in JWT, never large base64 strings
-          token.image = (dbUser.image && dbUser.image.length < 500) ? dbUser.image : null;
+        let conn;
+        try {
+          conn = await mariadb.createConnection(getDbConfig());
+          const rows = await conn.query(
+            "SELECT driverStatus, role, companyId, firstName, discordNick, name, image FROM User WHERE id = ? LIMIT 1",
+            [token.id]
+          );
+          const dbUser = rows && rows[0];
+          if (dbUser) {
+            token.driverStatus = dbUser.driverStatus;
+            token.role = dbUser.role;
+            token.companyId = dbUser.companyId;
+            token.firstName = dbUser.firstName;
+            token.discordNick = dbUser.discordNick;
+            token.name = dbUser.name;
+            token.image = (dbUser.image && dbUser.image.length < 500) ? dbUser.image : null;
+          }
+        } catch (e) {
+          console.error("JWT update error:", e);
+        } finally {
+          if (conn) {
+            try { await conn.end(); } catch (err) {}
+          }
         }
       }
       return token;
@@ -125,3 +180,5 @@ export const authOptions = {
 const handler = NextAuth(authOptions);
 
 export { handler as GET, handler as POST };
+
+

@@ -1,4 +1,4 @@
-﻿import fs from "node:fs";
+import fs from "node:fs";
 
 if (typeof process !== "undefined") {
   try {
@@ -22,6 +22,13 @@ try {
     if (fs.promises) {
       fs.promises.readdir = async () => [];
     }
+  }
+} catch (e) {}
+
+try {
+  if (typeof crypto !== "undefined") {
+    delete crypto.hkdf;
+    delete crypto.hkdfSync;
   }
 } catch (e) {}
 
