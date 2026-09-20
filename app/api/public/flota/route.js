@@ -6,6 +6,10 @@ export const dynamic = "force-dynamic";
 
 function normalizeUrl(url) {
   if (!url) return null;
+  if (url.startsWith("data:") || url.length > 500) {
+    // If someone put a huge base64 into imageUrl, ignore to avoid multi-megabyte payloads
+    return null;
+  }
   if (url.startsWith("/")) {
     return "https://system.vsbojarlogistic.pl" + url;
   }
@@ -15,7 +19,9 @@ function normalizeUrl(url) {
 export async function GET(req) {
   try {
     const rawTrucks = await dbAll(
-      "SELECT id, brand, model, plate, fleetNumber, imageUrl, assignedDriverId, attachedTrailerId FROM Truck ORDER BY fleetNumber ASC"
+      `SELECT id, brand, model, plate, fleetNumber, power, mileage, status, fuelLevel, type, imageUrl, assignedDriverId, attachedTrailerId, location, productionYear 
+       FROM Truck 
+       ORDER BY fleetNumber ASC, plate ASC`
     );
 
     const driverIds = rawTrucks.filter(t => t.assignedDriverId).map(t => t.assignedDriverId);
@@ -33,7 +39,7 @@ export async function GET(req) {
     if (trailerIds.length > 0) {
       const placeholders = trailerIds.map(() => '?').join(',');
       trailers = await dbAll(
-        `SELECT id, brand, plate, imageUrl FROM Trailer WHERE id IN (${placeholders})`,
+        `SELECT id, brand, model, plate, type, imageUrl FROM Trailer WHERE id IN (${placeholders})`,
         trailerIds
       );
     }
@@ -53,16 +59,25 @@ export async function GET(req) {
         model: t.model,
         plate: t.plate,
         fleetNumber: t.fleetNumber,
+        power: t.power || 0,
+        mileage: t.mileage || 0,
+        status: t.status || "AVAILABLE",
+        fuelLevel: t.fuelLevel ?? null,
+        type: t.type || "Ciągnik",
+        location: t.location || null,
+        productionYear: t.productionYear || null,
         imageUrl: normalizeUrl(t.imageUrl),
         assignedDriver: driver ? {
           id: driver.id,
-          name: driver.name || driver.firstName || driver.discordNick,
+          name: driver.discordNick || driver.name || driver.firstName || "Kierowca",
           image: driverImg,
         } : null,
         attachedTrailer: trailer ? {
           id: trailer.id,
           brand: trailer.brand,
+          model: trailer.model,
           plate: trailer.plate,
+          type: trailer.type,
           imageUrl: normalizeUrl(trailer.imageUrl),
         } : null,
       };
@@ -73,7 +88,7 @@ export async function GET(req) {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
-        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
       },
     });
   } catch (err) {
