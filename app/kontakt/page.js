@@ -1,9 +1,60 @@
 "use client";
 
+import { useState } from "react";
 import { motion } from "framer-motion";
-import { Mail, MapPin, Phone, MessageSquare } from "lucide-react";
+import { Mail, MapPin, Phone, MessageSquare, Loader2, CheckCircle2, AlertCircle, Send } from "lucide-react";
+import { toast } from "sonner";
 
 export default function ContactPage() {
+  const [formData, setFormData] = useState({
+    name: "",
+    email: "",
+    message: "",
+  });
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setSuccess(false);
+
+    if (!formData.name.trim() || !formData.email.trim() || !formData.message.trim()) {
+      setError("Wypełnij wszystkie pola formularza.");
+      toast.error("Wypełnij wszystkie pola formularza.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/contact", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(formData),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "Wystąpił błąd podczas wysyłania.");
+      }
+
+      setSuccess(true);
+      toast.success("Wiadomość została wysłana pomyślnie!");
+      setFormData({ name: "", email: "", message: "" });
+    } catch (err) {
+      console.error(err);
+      setError(err.message || "Nie udało się wysłać wiadomości. Spróbuj ponownie później.");
+      toast.error(err.message || "Nie udało się wysłać wiadomości.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="flex flex-col w-full min-h-screen bg-zinc-950 pb-20">
       <section className="pt-32 pb-16 px-4">
@@ -85,21 +136,74 @@ export default function ContactPage() {
             <h2 className="text-2xl font-bold text-white mb-6">Formularz Kontaktowy</h2>
             <p className="text-zinc-400 mb-8">Wypełnij poniższy formularz, a odpowiemy w ciągu 24 godzin.</p>
             
-            <form className="space-y-4" onSubmit={(e) => e.preventDefault()}>
+            <form className="space-y-4" onSubmit={handleSubmit}>
               <div>
                 <label className="block text-sm font-medium text-zinc-400 mb-1">Imię i nazwisko</label>
-                <input type="text" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500 transition-colors" placeholder="Jan Kowalski" />
+                <input 
+                  type="text" 
+                  required
+                  disabled={loading}
+                  value={formData.name}
+                  onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50" 
+                  placeholder="Jan Kowalski" 
+                />
               </div>
               <div>
                 <label className="block text-sm font-medium text-zinc-400 mb-1">Adres Email</label>
-                <input type="email" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500 transition-colors" placeholder="jan@example.com" />
+                <input 
+                  type="email" 
+                  required
+                  disabled={loading}
+                  value={formData.email}
+                  onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50" 
+                  placeholder="jan@example.com" 
+                />
               </div>
               <div>
                 <label className="block text-sm font-medium text-zinc-400 mb-1">Wiadomość</label>
-                <textarea rows={4} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500 transition-colors resize-none" placeholder="W czym możemy pomóc?"></textarea>
+                <textarea 
+                  rows={4} 
+                  required
+                  disabled={loading}
+                  value={formData.message}
+                  onChange={(e) => setFormData(prev => ({ ...prev, message: e.target.value }))}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition-colors resize-none disabled:opacity-50" 
+                  placeholder="W czym możemy pomóc?"
+                ></textarea>
               </div>
-              <button className="w-full py-4 bg-white text-zinc-950 font-bold rounded-xl hover:bg-zinc-200 transition-colors mt-2">
-                Wyślij wiadomość
+
+              {error && (
+                <div className="p-3.5 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm flex items-center gap-2.5">
+                  <AlertCircle size={18} className="shrink-0" />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              {success && (
+                <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-sm flex items-center gap-2.5">
+                  <CheckCircle2 size={18} className="shrink-0" />
+                  <span>Dziękujemy! Wiadomość została przesłana pomyślnie.</span>
+                </div>
+              )}
+
+              <button 
+                type="submit"
+                disabled={loading}
+                className="w-full py-4 bg-white text-zinc-950 font-bold rounded-xl hover:bg-zinc-200 transition-colors mt-2 flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed shadow-lg shadow-white/5"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 size={18} className="animate-spin" />
+                    <span>Wysyłanie...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send size={18} />
+                    <span>Wyślij wiadomość</span>
+                  </>
+                )}
               </button>
             </form>
           </motion.div>
