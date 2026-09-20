@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbAll } from "../../../../lib/db";
 
 export async function GET(request) {
   try {
@@ -10,19 +10,19 @@ export async function GET(request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    let user = await prisma.user.findUnique({
-      where: { id: session.user.id },
-      select: { fuelCards: true, name: true, assignedTruck: { select: { id: true, brand: true, model: true, plate: true } } }
-    });
+    const user = await dbOne("SELECT name FROM User WHERE id = ?", [session.user.id]);
 
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
+    const fuelCards = await dbAll("SELECT * FROM FuelCard WHERE userId = ?", [session.user.id]);
+    const assignedTruck = await dbOne("SELECT id, brand, model, plate FROM Truck WHERE assignedDriverId = ?", [session.user.id]);
+
     return NextResponse.json({
-      fuelCards: user.fuelCards,
+      fuelCards: fuelCards,
       name: user.name,
-      assignedTruck: user.assignedTruck
+      assignedTruck: assignedTruck || null
     });
 
   } catch (error) {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { prisma } from "../../../../lib/prisma";
+import { dbAll, dbOne, dbRun, generateId } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -13,9 +13,7 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
     }
 
-    const companies = await prisma.company.findMany({
-      orderBy: { isMain: "desc" }
-    });
+    const companies = await dbAll("SELECT * FROM Company ORDER BY isMain DESC");
 
     return NextResponse.json({ companies });
   } catch (error) {
@@ -33,18 +31,22 @@ export async function POST(req) {
     const body = await req.json();
     const { name, revenuePerKmEur, logoUrl, description, balance } = body;
 
-    const newCompany = await prisma.company.create({
-      data: {
-        id: crypto.randomUUID(),
-        name: name,
-        logoUrl: logoUrl || null,
-        description: description || null,
-        revenuePerKmEur: revenuePerKmEur || 1.20,
-        isMain: false,
-        balance: balance ? parseFloat(balance) : 0,
-        status: "ACTIVE"
-      }
-    });
+    const newId = crypto.randomUUID();
+    await dbRun(
+      "INSERT INTO Company (id, name, logoUrl, description, revenuePerKmEur, isMain, balance, status, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
+      [
+        newId,
+        name,
+        logoUrl || null,
+        description || null,
+        revenuePerKmEur || 1.20,
+        false,
+        balance ? parseFloat(balance) : 0,
+        "ACTIVE"
+      ]
+    );
+
+    const newCompany = await dbOne("SELECT * FROM Company WHERE id = ?", [newId]);
 
     return NextResponse.json({ success: true, company: newCompany });
   } catch (error) {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { db, dbOne, dbAll } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 import { getSafeAvatarUrl } from "../../../../lib/avatar";
@@ -14,53 +14,38 @@ export async function GET(req, { params }) {
 
     const { id } = await params;
 
-    const user = await prisma.user.findUnique({
-      where: { id },
-      include: {
-        assignedTruck: {
-          include: {
-            attachedTrailer: true
-          }
-        },
-        jobs: {
-          where: {
-            status: "APPROVED"
-          },
-          select: {
-            id: true,
-            startCity: true,
-            endCity: true,
-            cargo: true,
-            distance: true,
-            date: true,
-            driveTimeMinutes: true,
-            status: true,
-            weight: true,
-            createdAt: true
-          },
-          orderBy: {
-            date: "desc"
-          }
-        },
-        vehicleHistory: {
-          orderBy: {
-            date: "desc"
-          },
-          take: 5,
-          include: {
-            truck: true,
-            trailer: true
-          }
-        },
-        fuelCards: {
-          orderBy: { issuedAt: "desc" }
-        }
-      }
-    });
+    const user = await dbOne("SELECT * FROM User WHERE id = ?", [id]);
 
     if (!user || ((user.driverStatus === "WAITING_FOR_APPROVAL" || user.driverStatus === "INACTIVE") && session.user.role !== "BOARD" && session.user.role !== "OWNER" && session.user.id !== user.id)) {
       return NextResponse.json({ error: "Nie znaleziono użytkownika lub profil jest nieaktywny" }, { status: 404 });
     }
+
+    const assignedTrucks = await dbAll("SELECT * FROM Truck WHERE assignedDriverId = ?", [id]);
+    let assignedTruck = assignedTrucks[0] || null;
+    
+    if (assignedTruck && assignedTruck.attachedTrailerId) {
+      assignedTruck.attachedTrailer = await dbOne("SELECT * FROM Trailer WHERE id = ?", [assignedTruck.attachedTrailerId]);
+    }
+
+    const jobs = await dbAll(`
+      SELECT id, startCity, endCity, cargo, distance, date, status, weight, createdAt 
+      FROM Job 
+      WHERE userId = ? AND status = 'APPROVED'
+      ORDER BY date DESC
+    `, [id]);
+    user.jobs = jobs;
+
+    const vehicleHistory = await dbAll(`
+      SELECT * FROM VehicleHistory WHERE userId = ? ORDER BY date DESC LIMIT 5
+    `, [id]);
+    
+    for (let v of vehicleHistory) {
+      if (v.truckId) v.truck = await dbOne("SELECT * FROM Truck WHERE id = ?", [v.truckId]);
+      if (v.trailerId) v.trailer = await dbOne("SELECT * FROM Trailer WHERE id = ?", [v.trailerId]);
+    }
+    user.vehicleHistory = vehicleHistory;
+
+    user.fuelCards = await dbAll("SELECT * FROM FuelCard WHERE userId = ? ORDER BY issuedAt DESC", [id]);
 
     const now = new Date();
     const currentMonth = now.getMonth();
@@ -69,7 +54,6 @@ export async function GET(req, { params }) {
     let thisMonthKm = 0;
     let thisYearKm = 0;
     let totalJobsKm = 0;
-    let totalJobsTime = 0;
     let routeLengths = [];
     let cities = {};
 
@@ -78,12 +62,11 @@ export async function GET(req, { params }) {
       const isThisMonth = jobDate.getMonth() === currentMonth && jobDate.getFullYear() === currentYear;
       const isThisYear = jobDate.getFullYear() === currentYear;
 
-      if (isThisMonth) thisMonthKm += job.distance;
-      if (isThisYear) thisYearKm += job.distance;
+      if (isThisMonth) thisMonthKm += Number(job.distance || 0);
+      if (isThisYear) thisYearKm += Number(job.distance || 0);
       
-      totalJobsKm += job.distance;
-      totalJobsTime += (job.driveTimeMinutes || 0);
-      routeLengths.push(job.distance);
+      totalJobsKm += Number(job.distance || 0);
+      routeLengths.push(Number(job.distance || 0));
 
       if (job.endCity) {
         if (cities[job.endCity]) cities[job.endCity]++;
@@ -99,25 +82,18 @@ export async function GET(req, { params }) {
       .slice(0, 3)
       .map(item => item.city);
 
-    const availableTrucks = await prisma.truck.findMany({
-      where: {
-        OR: [
-          { assignedDriverId: null },
-          { assignedDriverId: id }
-        ]
-      },
-      select: { id: true, brand: true, model: true, plate: true, fleetNumber: true }
-    });
+    const availableTrucks = await dbAll(`
+      SELECT id, brand, model, plate, fleetNumber 
+      FROM Truck 
+      WHERE assignedDriverId IS NULL OR assignedDriverId = ?
+    `, [id]);
 
-    const availableTrailers = await prisma.trailer.findMany({
-      where: {
-        OR: [
-          { attachedTruck: null },
-          { attachedTruck: { assignedDriverId: id } }
-        ]
-      },
-      select: { id: true, brand: true, type: true, plate: true }
-    });
+    const availableTrailers = await dbAll(`
+      SELECT t.id, t.brand, t.type, t.plate 
+      FROM Trailer t
+      LEFT JOIN Truck tr ON t.id = tr.attachedTrailerId
+      WHERE tr.id IS NULL OR tr.assignedDriverId = ?
+    `, [id]);
 
     const isOnline = user.lastOnline && (new Date() - new Date(user.lastOnline) < 5 * 60 * 1000);
     let computedStatus = user.driverStatus;
@@ -128,6 +104,7 @@ export async function GET(req, { params }) {
     const { password, emailVerified, accounts, sessions, ...restUser } = user;
     const safeUser = {
       ...restUser,
+      assignedTruck,
       image: getSafeAvatarUrl(user),
       driverStatus: computedStatus
     };
@@ -138,10 +115,10 @@ export async function GET(req, { params }) {
         stats: {
           thisMonthKm,
           thisYearKm,
-          totalJobsKm: totalJobsKm + (user.initialMileage || 0),
+          totalJobsKm: totalJobsKm + Number(user.initialMileage || 0),
           averageRouteLength,
           topCities,
-          jobsCount: user.jobs.length + (user.initialDeliveries || 0)
+          jobsCount: user.jobs.length + Number(user.initialDeliveries || 0)
         },
         recentJobs: user.jobs.slice(0, 5),
         availableTrucks,
@@ -177,20 +154,34 @@ export async function PUT(req, { params }) {
     
     const body = await req.json();
 
-    const updatedData = {
-      aboutMe: body.aboutMe !== undefined ? body.aboutMe : undefined,
-      discordNick: body.discordNick !== undefined ? body.discordNick : undefined,
-      facebookUrl: body.facebookUrl !== undefined ? body.facebookUrl : undefined,
-      trucksBookUrl: body.trucksBookUrl !== undefined ? body.trucksBookUrl : undefined,
-      trucksBookName: body.trucksBookName !== undefined ? body.trucksBookName : undefined,
-      steamUrl: body.steamUrl !== undefined ? body.steamUrl : undefined,
-      spotifyUrl: body.spotifyUrl !== undefined ? body.spotifyUrl : undefined,
-      image: body.image !== undefined ? body.image : undefined,
-      firstName: body.firstName !== undefined ? body.firstName : undefined,
-    };
+    const updatedData = {};
+    if (body.aboutMe !== undefined) updatedData.aboutMe = body.aboutMe;
+    if (body.discordNick !== undefined) updatedData.discordNick = body.discordNick;
+    if (body.facebookUrl !== undefined) updatedData.facebookUrl = body.facebookUrl;
+    if (body.trucksBookUrl !== undefined) updatedData.trucksBookUrl = body.trucksBookUrl;
+    if (body.trucksBookName !== undefined) updatedData.trucksBookName = body.trucksBookName;
+    if (body.steamUrl !== undefined) updatedData.steamUrl = body.steamUrl;
+    if (body.spotifyUrl !== undefined) updatedData.spotifyUrl = body.spotifyUrl;
+    if (body.firstName !== undefined) updatedData.firstName = body.firstName;
+
+    // Do NOT overwrite user.image with the placeholder endpoint URL!
+    if (body.image !== undefined) {
+      if (typeof body.image === "string" && (body.image.includes("/api/user/") || body.image.endsWith("/avatar"))) {
+        // Skip placeholder URL
+      } else {
+        updatedData.image = body.image;
+      }
+    }
 
     if (canManage) {
-      if (body.birthDate !== undefined) updatedData.birthDate = body.birthDate ? new Date(body.birthDate) : null;
+      if (body.birthDate !== undefined) {
+        if (body.birthDate) {
+          const d = new Date(body.birthDate);
+          updatedData.birthDate = !isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : null;
+        } else {
+          updatedData.birthDate = null;
+        }
+      }
       if (body.contractType !== undefined) updatedData.contractType = body.contractType;
       if (body.probationPeriod !== undefined) updatedData.probationPeriod = body.probationPeriod;
       if (body.role !== undefined) updatedData.role = body.role;
@@ -213,50 +204,50 @@ export async function PUT(req, { params }) {
       if (body.initialDeliveries !== undefined) updatedData.initialDeliveries = parseInt(body.initialDeliveries) || 0;
       
       if (body.truckId !== undefined) {
-        await prisma.truck.updateMany({
-          where: { assignedDriverId: id },
-          data: { assignedDriverId: null, status: "AVAILABLE" }
-        });
-        
-        if (body.truckId !== null && body.truckId !== "") {
-          await prisma.truck.update({
-            where: { id: body.truckId },
-            data: { assignedDriverId: id, status: "IN_USE" }
-          });
+        await db(async (conn) => {
+          await conn.query("UPDATE Truck SET assignedDriverId = NULL, status = 'AVAILABLE', updatedAt = NOW() WHERE assignedDriverId = ?", [id]);
           
-          if (body.trailerId !== undefined) {
-            const truck = await prisma.truck.findUnique({ where: { id: body.truckId } });
-            if (truck && truck.attachedTrailerId) {
-              await prisma.trailer.update({
-                where: { id: truck.attachedTrailerId },
-                data: { status: "AVAILABLE" }
-              });
-            }
+          if (body.truckId !== null && body.truckId !== "") {
+            await conn.query("UPDATE Truck SET assignedDriverId = ?, status = 'IN_USE', updatedAt = NOW() WHERE id = ?", [id, body.truckId]);
             
-            await prisma.truck.update({
-              where: { id: body.truckId },
-              data: { attachedTrailerId: null }
-            });
-            
-            if (body.trailerId !== null && body.trailerId !== "") {
-              await prisma.truck.update({
-                where: { id: body.trailerId },
-                data: { attachedTrailerId: body.trailerId }
-              });
-              await prisma.trailer.update({
-                where: { id: body.trailerId },
-                data: { status: "IN_USE" }
-              });
+            if (body.trailerId !== undefined) {
+              const truckArr = await conn.query("SELECT attachedTrailerId FROM Truck WHERE id = ?", [body.truckId]);
+              if (truckArr.length > 0 && truckArr[0].attachedTrailerId) {
+                await conn.query("UPDATE Trailer SET status = 'AVAILABLE', updatedAt = NOW() WHERE id = ?", [truckArr[0].attachedTrailerId]);
+              }
+              
+              await conn.query("UPDATE Truck SET attachedTrailerId = NULL, updatedAt = NOW() WHERE id = ?", [body.truckId]);
+              
+              if (body.trailerId !== null && body.trailerId !== "") {
+                await conn.query("UPDATE Truck SET attachedTrailerId = ?, updatedAt = NOW() WHERE id = ?", [body.trailerId, body.truckId]);
+                await conn.query("UPDATE Trailer SET status = 'IN_USE', updatedAt = NOW() WHERE id = ?", [body.trailerId]);
+              }
             }
           }
-        }
+        });
       }
     }
 
-    const updatedUser = await prisma.user.update({
-      where: { id },
-      data: updatedData
-    });
+    if (Object.keys(updatedData).length > 0) {
+      const setClauses = [];
+      const paramsArr = [];
+      for (const [key, value] of Object.entries(updatedData)) {
+        setClauses.push(`${key} = ?`);
+        paramsArr.push(value);
+      }
+      setClauses.push("updatedAt = NOW()");
+      paramsArr.push(id);
+      
+      await db(async (conn) => {
+        await conn.query(`UPDATE User SET ${setClauses.join(", ")} WHERE id = ?`, paramsArr);
+      });
+    }
+
+    const updatedUser = await dbOne("SELECT * FROM User WHERE id = ?", [id]);
+
+    if (!updatedUser) {
+      return NextResponse.json({ error: "Nie znaleziono użytkownika" }, { status: 404 });
+    }
 
     return NextResponse.json({
       success: true,
@@ -286,39 +277,39 @@ export async function DELETE(req, { params }) {
       return NextResponse.json({ error: "Nie możesz usunąć tego konta." }, { status: 400 });
     }
 
-    await prisma.truck.updateMany({
-      where: { assignedDriverId: id },
-      data: { assignedDriverId: null, status: "AVAILABLE" }
-    });
+    await db(async (conn) => {
+      await conn.query("START TRANSACTION");
+      try {
+        await conn.query("UPDATE Truck SET assignedDriverId = NULL, status = 'AVAILABLE', updatedAt = NOW() WHERE assignedDriverId = ?", [id]);
 
-    const userMessages = await prisma.chatMessage.findMany({ where: { userId: id }, select: { id: true } });
-    const messageIds = userMessages.map(m => m.id);
-    
-    if (messageIds.length > 0) {
-      await prisma.chatMessage.updateMany({
-        where: { replyToId: { in: messageIds } },
-        data: { replyToId: null }
-      });
-      await prisma.chatMessageReaction.deleteMany({
-        where: { messageId: { in: messageIds } }
-      });
-    }
+        const userMessages = await conn.query("SELECT id FROM ChatMessage WHERE userId = ?", [id]);
+        const messageIds = userMessages.map(m => m.id);
+        
+        if (messageIds.length > 0) {
+          const inClause = messageIds.map(() => '?').join(',');
+          await conn.query(`UPDATE ChatMessage SET replyToId = NULL WHERE replyToId IN (${inClause})`, messageIds);
+          await conn.query(`DELETE FROM ChatMessageReaction WHERE messageId IN (${inClause})`, messageIds);
+        }
 
-    await prisma.chatMessageReaction.deleteMany({ where: { userId: id } });
-    await prisma.chatMessage.deleteMany({ where: { userId: id } });
-    await prisma.job.deleteMany({ where: { userId: id } });
-    await prisma.request.deleteMany({ where: { userId: id } });
-    await prisma.bankTransaction.deleteMany({ where: { userId: id } });
-    await prisma.announcement.deleteMany({ where: { authorId: id } });
-    await prisma.casinoLog.deleteMany({ where: { userId: id } });
-    await prisma.loan.deleteMany({ where: { userId: id } });
-    await prisma.fuelLog.deleteMany({ where: { userId: id } });
-    
-    await prisma.vehicleHistory.updateMany({ where: { userId: id }, data: { userId: null } });
-    await prisma.bugReport.updateMany({ where: { userId: id }, data: { userId: null } });
+        await conn.query("DELETE FROM ChatMessageReaction WHERE userId = ?", [id]);
+        await conn.query("DELETE FROM ChatMessage WHERE userId = ?", [id]);
+        await conn.query("DELETE FROM Job WHERE userId = ?", [id]);
+        await conn.query("DELETE FROM Request WHERE userId = ?", [id]);
+        await conn.query("DELETE FROM BankTransaction WHERE userId = ?", [id]);
+        await conn.query("DELETE FROM Announcement WHERE authorId = ?", [id]);
+        await conn.query("DELETE FROM CasinoLog WHERE userId = ?", [id]);
+        await conn.query("DELETE FROM Loan WHERE userId = ?", [id]);
+        await conn.query("DELETE FROM FuelLog WHERE userId = ?", [id]);
+        
+        await conn.query("UPDATE VehicleHistory SET userId = NULL WHERE userId = ?", [id]);
+        await conn.query("UPDATE BugReport SET userId = NULL WHERE userId = ?", [id]);
 
-    await prisma.user.delete({
-      where: { id }
+        await conn.query("DELETE FROM User WHERE id = ?", [id]);
+        await conn.query("COMMIT");
+      } catch (err) {
+        await conn.query("ROLLBACK");
+        throw err;
+      }
     });
 
     return NextResponse.json({ success: true });

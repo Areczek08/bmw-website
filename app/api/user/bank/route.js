@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbAll } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -13,10 +13,10 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
     }
 
-    const transactions = await prisma.bankTransaction.findMany({
-      where: { userId: session.user.id },
-      orderBy: { date: "desc" }
-    });
+    const transactions = await dbAll(
+      "SELECT * FROM BankTransaction WHERE userId = ? ORDER BY date DESC",
+      [session.user.id]
+    );
 
     return NextResponse.json({ transactions });
   } catch (error) {

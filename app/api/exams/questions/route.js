@@ -2,9 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 import { licenseQuestions, medicalQuestions } from "./questionsDB";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne } from "../../../../lib/db";
 
-// Helper function to shuffle array
 function shuffle(array) {
   let currentIndex = array.length, randomIndex;
   while (currentIndex !== 0) {
@@ -25,9 +24,7 @@ export async function GET(req) {
     const { searchParams } = new URL(req.url);
     const type = searchParams.get("type");
 
-    const user = await prisma.user.findUnique({
-      where: { id: session.user.id }
-    });
+    const user = await dbOne("SELECT * FROM User WHERE id = ?", [session.user.id]);
 
     if (!user) return NextResponse.json({ error: "Brak użytkownika" }, { status: 404 });
 

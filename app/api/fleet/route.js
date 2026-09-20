@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../lib/prisma";
+import { dbAll } from "../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../auth/[...nextauth]/route";
 import { getSafeAvatarUrl } from "../../../lib/avatar";
@@ -14,48 +14,55 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
     }
 
-    const companyFilter = session.user.role === "OWNER" ? {} : { companyId: session.user.companyId || "BMS" };
+    const companyFilter = session.user.role === "OWNER" ? null : (session.user.companyId || "BMS");
 
-    const trucks = await prisma.truck.findMany({
-      where: companyFilter,
-      include: {
-        assignedDriver: {
-          select: {
-            name: true,
-            firstName: true,
-            discordNick: true,
-            id: true,
-            image: true
-          }
-        },
-        attachedTrailer: true
-      },
-      orderBy: {
-        fleetNumber: "asc",
-      },
+    let trucksQuery = "SELECT * FROM Truck";
+    let trailersQuery = "SELECT * FROM Trailer";
+    let params = [];
+    
+    if (companyFilter) {
+      trucksQuery += " WHERE companyId = ?";
+      trailersQuery += " WHERE companyId = ?";
+      params = [companyFilter];
+    }
+    
+    trucksQuery += " ORDER BY fleetNumber ASC";
+    trailersQuery += " ORDER BY plate ASC";
+
+    const trucksRaw = await dbAll(trucksQuery, params);
+    const trailersRaw = await dbAll(trailersQuery, params);
+
+    // Get assigned drivers for trucks
+    const driverIds = trucksRaw.filter(t => t.assignedDriverId).map(t => t.assignedDriverId);
+    let drivers = [];
+    if (driverIds.length > 0) {
+      const placeholders = driverIds.map(() => '?').join(',');
+      drivers = await dbAll(`SELECT id, name, firstName, discordNick, image FROM User WHERE id IN (${placeholders})`, driverIds);
+    }
+
+    const safeTrucks = trucksRaw.map(t => {
+      const assignedDriver = drivers.find(d => d.id === t.assignedDriverId);
+      const attachedTrailer = trailersRaw.find(tr => tr.id === t.attachedTrailerId);
+      
+      return {
+        ...t,
+        assignedDriver: assignedDriver ? {
+          ...assignedDriver,
+          image: getSafeAvatarUrl(assignedDriver)
+        } : null,
+        attachedTrailer: attachedTrailer || null
+      };
     });
 
-    const safeTrucks = trucks.map(t => ({
-      ...t,
-      assignedDriver: t.assignedDriver ? {
-        ...t.assignedDriver,
-        image: getSafeAvatarUrl(t.assignedDriver)
-      } : t.assignedDriver
-    }));
-
-    const trailers = await prisma.trailer.findMany({
-      where: companyFilter,
-      include: {
-        attachedTruck: {
-          select: {
-            fleetNumber: true,
-            plate: true
-          }
-        }
-      },
-      orderBy: {
-        plate: "asc",
-      }
+    const trailers = trailersRaw.map(tr => {
+      const attachedTruck = trucksRaw.find(t => t.attachedTrailerId === tr.id);
+      return {
+        ...tr,
+        attachedTruck: attachedTruck ? {
+          fleetNumber: attachedTruck.fleetNumber,
+          plate: attachedTruck.plate
+        } : null
+      };
     });
 
     return NextResponse.json({ trucks: safeTrucks, trailers }, {

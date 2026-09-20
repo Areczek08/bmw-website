@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../../lib/prisma";
+import { dbOne, dbRun, generateId } from "../../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../auth/[...nextauth]/route";
 
@@ -20,31 +20,22 @@ export async function POST(req, { params }) {
     const userId = session.user.id;
 
     // Check if reaction already exists
-    const existingReaction = await prisma.chatMessageReaction.findUnique({
-      where: {
-        messageId_userId_emoji: {
-          messageId,
-          userId,
-          emoji
-        }
-      }
-    });
+    const existingReaction = await dbOne(`
+      SELECT id FROM ChatMessageReaction 
+      WHERE messageId = ? AND userId = ? AND emoji = ?
+    `, [messageId, userId, emoji]);
 
     if (existingReaction) {
       // Toggle off
-      await prisma.chatMessageReaction.delete({
-        where: { id: existingReaction.id }
-      });
+      await dbRun(`DELETE FROM ChatMessageReaction WHERE id = ?`, [existingReaction.id]);
       return NextResponse.json({ action: "removed" });
     } else {
       // Toggle on
-      await prisma.chatMessageReaction.create({
-        data: {
-          messageId,
-          userId,
-          emoji
-        }
-      });
+      const newId = generateId();
+      await dbRun(`
+        INSERT INTO ChatMessageReaction (id, messageId, userId, emoji, createdAt)
+        VALUES (?, ?, ?, ?, NOW())
+      `, [newId, messageId, userId, emoji]);
       return NextResponse.json({ action: "added" });
     }
   } catch (error) {

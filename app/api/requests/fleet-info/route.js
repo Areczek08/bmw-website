@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbAll } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -11,28 +11,18 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
     }
 
-    const currentTruck = await prisma.truck.findUnique({
-      where: { assignedDriverId: session.user.id },
-      select: {
-        id: true,
-        brand: true,
-        model: true,
-        plate: true,
-        assignedAt: true
-      }
-    });
+    const currentTruck = await dbOne(`
+      SELECT id, brand, model, plate, assignedAt 
+      FROM Truck 
+      WHERE assignedDriverId = ?
+    `, [session.user.id]);
 
-    const availableTrucks = await prisma.truck.findMany({
-      where: { status: "AVAILABLE" },
-      select: {
-        id: true,
-        brand: true,
-        model: true,
-        plate: true,
-        power: true
-      },
-      orderBy: { brand: 'asc' }
-    });
+    const availableTrucks = await dbAll(`
+      SELECT id, brand, model, plate, power 
+      FROM Truck 
+      WHERE status = 'AVAILABLE' 
+      ORDER BY brand ASC
+    `);
 
     return NextResponse.json({ currentTruck, availableTrucks });
   } catch (error) {

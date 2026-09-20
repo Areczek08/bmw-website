@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../../auth/[...nextauth]/route";
-import { prisma } from "../../../../../lib/prisma";
+import { dbOne, dbRun, generateId } from "../../../../../lib/db";
 
 export async function POST(req) {
   try {
@@ -16,32 +16,26 @@ export async function POST(req) {
       return NextResponse.json({ error: "Brakuje danych (leasingId, month, year)" }, { status: 400 });
     }
 
-    const leasing = await prisma.leasing.findUnique({
-      where: { id: leasingId },
-      include: {
-        truck: true
-      }
-    });
+    const leasing = await dbOne("SELECT * FROM Leasing WHERE id = ?", [leasingId]);
 
     if (!leasing) {
       return NextResponse.json({ error: "Leasing nie istnieje" }, { status: 404 });
     }
 
-    // Sprawdź, czy rata już nie została zapłacona
-    const existingPayment = await prisma.leasingPayment.findFirst({
-      where: {
-        leasingId: leasingId,
-        month: month,
-        year: year
-      }
-    });
+    const truck = await dbOne("SELECT * FROM Truck WHERE id = ?", [leasing.truckId]);
+    leasing.truck = truck || null;
+
+    const existingPayment = await dbOne(
+      "SELECT * FROM LeasingPayment WHERE leasingId = ? AND month = ? AND year = ?",
+      [leasingId, month, year]
+    );
 
     if (existingPayment) {
       return NextResponse.json({ error: "Ta rata została już opłacona!" }, { status: 400 });
     }
 
-    // Pobierz saldo firmy
-    const company = await prisma.company.findUnique({ where: { id: companyId } });
+    const companyId = session.user.companyId || "BMS";
+    const company = await dbOne("SELECT * FROM Company WHERE id = ?", [companyId]);
     if (!company) {
       return NextResponse.json({ error: "Nie znaleziono ustawień firmy" }, { status: 404 });
     }
@@ -50,35 +44,20 @@ export async function POST(req) {
       return NextResponse.json({ error: "Brak wystarczających środków na koncie firmowym!" }, { status: 400 });
     }
 
-    // Pobierz środki z konta firmy i dodaj transakcję firmową
-    await prisma.$transaction([
-      prisma.company.update({
-        where: { id: companyId },
-        data: {
-          balance: { decrement: leasing.monthlyRate }
-        }
-      }),
-      prisma.companyTransaction.create({ data: { companyId: companyId,
-          amount: leasing.monthlyRate,
-          type: "EXPENSE",
-          category: "Leasing",
-          description: `Rata leasingu - ${leasing.truck.brand} ${leasing.truck.model} (${leasing.truck.plate}) za ${month}/${year}`,
-          date: new Date()
-        }
-      }),
-      prisma.leasingPayment.create({
-        data: {
-          leasingId: leasingId,
-          amount: leasing.monthlyRate,
-          month: month,
-          year: year,
-          paidBy: session.user.id
-        }
-      })
-    ]);
+    const paymentId = generateId();
+    const transactionId = generateId();
+
+    await dbRun("UPDATE Company SET balance = balance - ?, updatedAt = NOW() WHERE id = ?", [leasing.monthlyRate, companyId]);
+    await dbRun(
+      "INSERT INTO CompanyTransaction (id, companyId, type, amount, category, description, date) VALUES (?, ?, 'EXPENSE', ?, 'Leasing', ?, NOW())",
+      [transactionId, companyId, leasing.monthlyRate, `Rata leasingu - ${truck?.brand || 'Pojazd'} ${truck?.model || ''} (${truck?.plate || ''}) za ${month}/${year}`]
+    );
+    await dbRun(
+      "INSERT INTO LeasingPayment (id, leasingId, amount, month, year, paidAt, paidBy) VALUES (?, ?, ?, ?, ?, NOW(), ?)",
+      [paymentId, leasingId, leasing.monthlyRate, month, year, session.user.id]
+    );
 
     return NextResponse.json({ success: true });
-
   } catch (error) {
     console.error("Leasing Pay Error:", error);
     return NextResponse.json({ error: "Wystąpił błąd podczas opłacania raty" }, { status: 500 });

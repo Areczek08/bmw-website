@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../../auth/[...nextauth]/route";
-import { prisma } from "../../../../../lib/prisma";
+import { dbOne, dbRun } from "../../../../../lib/db";
 
 export async function DELETE(req, { params }) {
   try {
@@ -10,20 +10,18 @@ export async function DELETE(req, { params }) {
       return NextResponse.json({ error: "Brak uprawnień" }, { status: 403 });
     }
 
-    const { id } = params;
+    const { id } = await params;
     if (!id) {
       return NextResponse.json({ error: "Brak ID leasingu" }, { status: 400 });
     }
 
-    const existing = await prisma.leasing.findUnique({ where: { id } });
+    const existing = await dbOne("SELECT * FROM Leasing WHERE id = ?", [id]);
     if (!existing) {
       return NextResponse.json({ error: "Leasing nie istnieje" }, { status: 404 });
     }
 
-    // Usunięcie kaskadowo usunie wpłaty dzięki onDelete: Cascade w schemacie (prisma)
-    await prisma.leasing.delete({
-      where: { id }
-    });
+    await dbRun("DELETE FROM LeasingPayment WHERE leasingId = ?", [id]);
+    await dbRun("DELETE FROM Leasing WHERE id = ?", [id]);
 
     return NextResponse.json({ success: true });
   } catch (error) {

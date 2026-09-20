@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../../lib/prisma";
+import { dbOne } from "../../../../../lib/db";
 
 export async function GET(req, { params }) {
   try {
@@ -9,13 +9,11 @@ export async function GET(req, { params }) {
       return new NextResponse("Missing user ID", { status: 400 });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id },
-      select: { image: true }
-    });
+    const user = await dbOne("SELECT image FROM User WHERE id = ?", [id]);
+
+    const defaultSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="#27272a"/><path d="M50 45 a 15 15 0 1 0 0 -30 a 15 15 0 1 0 0 30 M25 80 c 0 -20 50 -20 50 0" fill="none" stroke="#71717a" stroke-width="5"/></svg>`;
 
     if (!user || !user.image) {
-      const defaultSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="#27272a"/><path d="M50 45 a 15 15 0 1 0 0 -30 a 15 15 0 1 0 0 30 M25 80 c 0 -20 50 -20 50 0" fill="none" stroke="#71717a" stroke-width="5"/></svg>`;
       return new NextResponse(defaultSvg, {
         status: 200,
         headers: {
@@ -25,7 +23,18 @@ export async function GET(req, { params }) {
       });
     }
 
-    const imageStr = user.image;
+    const imageStr = user.image.trim();
+
+    // Prevent self-referencing redirect loops!
+    if (imageStr.includes(`/api/user/${id}/avatar`) || imageStr.includes("/api/user/") && imageStr.endsWith("/avatar")) {
+      return new NextResponse(defaultSvg, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/svg+xml",
+          "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        }
+      });
+    }
 
     if (imageStr.startsWith("http://") || imageStr.startsWith("https://")) {
       return NextResponse.redirect(imageStr, {
@@ -37,7 +46,7 @@ export async function GET(req, { params }) {
     }
 
     if (imageStr.startsWith("/")) {
-      const baseUrl = req.url ? new URL(req.url).origin : "http://localhost:3000";
+      const baseUrl = req.url ? new URL(req.url).origin : "https://system.vsbojarlogistic.pl";
       return NextResponse.redirect(new URL(imageStr, baseUrl), {
         status: 307,
         headers: {
@@ -73,7 +82,13 @@ export async function GET(req, { params }) {
         }
       });
     } catch {
-      return new NextResponse("Invalid image format", { status: 400 });
+      return new NextResponse(defaultSvg, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/svg+xml",
+          "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        }
+      });
     }
   } catch (error) {
     console.error("Błąd serwowania awatara:", error);

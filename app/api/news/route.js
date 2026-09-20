@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../lib/prisma";
+import { dbAll, dbRun, generateId } from "../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../auth/[...nextauth]/route";
 import { getSafeAvatarUrl } from "../../../lib/avatar";
@@ -11,31 +11,25 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak dostępu." }, { status: 401 });
     }
 
-    const news = await prisma.announcement.findMany({
-      orderBy: [
-        { isPinned: 'desc' },
-        { createdAt: 'desc' }
-      ],
-      include: {
-        author: {
-          select: {
-            id: true,
-            name: true,
-            firstName: true,
-            image: true,
-            role: true
-          }
-        }
-      }
-    });
+    const newsRaw = await dbAll("SELECT * FROM Announcement ORDER BY isPinned DESC, createdAt DESC");
 
-    const safeNews = news.map(item => ({
-      ...item,
-      author: item.author ? {
-        ...item.author,
-        image: getSafeAvatarUrl(item.author)
-      } : item.author
-    }));
+    const authorIds = [...new Set(newsRaw.filter(n => n.authorId).map(n => n.authorId))];
+    let authors = [];
+    if (authorIds.length > 0) {
+      const placeholders = authorIds.map(() => '?').join(',');
+      authors = await dbAll(`SELECT id, name, firstName, image, role FROM User WHERE id IN (${placeholders})`, authorIds);
+    }
+
+    const safeNews = newsRaw.map(item => {
+      const author = authors.find(a => a.id === item.authorId);
+      return {
+        ...item,
+        author: author ? {
+          ...author,
+          image: getSafeAvatarUrl(author)
+        } : null
+      };
+    });
 
     return NextResponse.json(safeNews, {
       headers: {
@@ -63,16 +57,13 @@ export async function POST(req) {
       return NextResponse.json({ error: "Brakuje tytułu lub treści." }, { status: 400 });
     }
 
-    const announcement = await prisma.announcement.create({
-      data: {
-        title,
-        content,
-        isPinned: isPinned || false,
-        authorId: session.user.id
-      }
-    });
+    const id = generateId();
+    await dbRun(
+      "INSERT INTO Announcement (id, title, content, isPinned, authorId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, NOW(), NOW())",
+      [id, title, content, isPinned ? 1 : 0, session.user.id]
+    );
 
-    return NextResponse.json(announcement);
+    return NextResponse.json({ id, title, content, isPinned, authorId: session.user.id });
   } catch (error) {
     console.error("Błąd podczas dodawania ogłoszenia:", error);
     return NextResponse.json({ error: "Wystąpił błąd." }, { status: 500 });

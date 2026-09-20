@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne } from "../../../../lib/db";
 
 export async function GET(req) {
   try {
@@ -11,10 +11,7 @@ export async function GET(req) {
       return new NextResponse("Missing message ID or type", { status: 400 });
     }
 
-    const message = await prisma.chatMessage.findUnique({
-      where: { id: messageId },
-      select: { imageUrl: true, audioUrl: true }
-    });
+    const message = await dbOne(`SELECT imageUrl, audioUrl FROM ChatMessage WHERE id = ?`, [messageId]);
 
     if (!message) {
       return new NextResponse("Message not found", { status: 404 });

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbAll } from "../../../../lib/db";
 import { getSafeAvatarUrl } from "../../../../lib/avatar";
 
 export async function GET(req) {
@@ -8,57 +8,45 @@ export async function GET(req) {
     const period = searchParams.get("period") || "all";
     const dateParam = searchParams.get("date");
 
-    let dateFilter = {};
+    let conditions = ["status = 'APPROVED'"];
+    let params = [];
 
     if (period === "month" && dateParam) {
       const [year, month] = dateParam.split("-").map(Number);
       const startDate = new Date(year, month - 1, 1);
       const endDate = new Date(year, month, 1);
-      dateFilter = {
-        date: {
-          gte: startDate,
-          lt: endDate,
-        },
-      };
+      conditions.push("date >= ?");
+      conditions.push("date < ?");
+      params.push(startDate, endDate);
     } else if (period === "year" && dateParam) {
       const year = parseInt(dateParam.split("-")[0]);
       const startDate = new Date(year, 0, 1);
       const endDate = new Date(year + 1, 0, 1);
-      dateFilter = {
-        date: {
-          gte: startDate,
-          lt: endDate,
-        },
-      };
+      conditions.push("date >= ?");
+      conditions.push("date < ?");
+      params.push(startDate, endDate);
     }
 
-    const jobs = await prisma.job.findMany({
-      where: {
-        status: "APPROVED",
-        ...dateFilter,
-      },
-      select: {
-        distance: true,
-        averageFuel: true,
-        user: {
-          select: {
-            id: true,
-            name: true,
-            firstName: true,
-            discordNick: true,
-            image: true,
-          },
-        },
-      },
-    });
+    const whereClause = conditions.join(" AND ");
+    const jobs = await dbAll(`SELECT userId, distance, averageFuel FROM Job WHERE ${whereClause}`, params);
+
+    const userIds = [...new Set(jobs.map(j => j.userId))];
+    let users = [];
+    if (userIds.length > 0) {
+      const placeholders = userIds.map(() => '?').join(',');
+      users = await dbAll(`SELECT id, name, firstName, discordNick, image FROM User WHERE id IN (${placeholders})`, userIds);
+    }
 
     const userStats = {};
 
     jobs.forEach((job) => {
-      const userId = job.user.id;
+      const userId = job.userId;
+      const user = users.find(u => u.id === userId);
+      if (!user) return;
+      
       if (!userStats[userId]) {
         userStats[userId] = {
-          user: job.user,
+          user: user,
           totalDistance: 0,
           totalFuel: 0,
         };

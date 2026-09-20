@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { db, generateId } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -14,49 +14,46 @@ export async function POST(req) {
     const body = await req.json();
     const { userId, amount, title, date } = body;
 
-    if (!userId || !amount || amount <= 0 || !title) {
+    const parsedAmount = parseFloat(amount);
+    if (!userId || isNaN(parsedAmount) || parsedAmount <= 0 || !title) {
       return NextResponse.json({ error: "Nieprawidłowe dane przelewu." }, { status: 400 });
     }
 
     const companyId = session.user.companyId || "BMS";
-
-    // 1. Zmniejsz saldo firmy
-    const company = await prisma.company.update({
-      where: { id: companyId },
-      data: { balance: { decrement: amount } }
-    });
-
-    // 2. Zwiększ saldo pracownika
-    await prisma.user.update({
-      where: { id: userId },
-      data: { accountBalance: { increment: amount } }
-    });
-
     const executionDate = date ? new Date(date) : new Date();
 
-    // 3. Stwórz wpis w koncie pracownika
-    const bankTransaction = await prisma.bankTransaction.create({
-      data: {
-        userId: userId,
-        amount: amount,
-        title: title,
-        date: executionDate,
+    const bankTransactionId = generateId();
+    const txId = generateId();
+
+    const result = await db(async (conn) => {
+      await conn.query("START TRANSACTION");
+      try {
+        await conn.query("UPDATE Company SET balance = balance - ?, updatedAt = NOW() WHERE id = ?", [parsedAmount, companyId]);
+        await conn.query("UPDATE User SET accountBalance = accountBalance + ?, updatedAt = NOW() WHERE id = ?", [parsedAmount, userId]);
+
+        await conn.query(
+          "INSERT INTO BankTransaction (id, userId, amount, title, date) VALUES (?, ?, ?, ?, ?)",
+          [bankTransactionId, userId, parsedAmount, title, executionDate]
+        );
+
+        await conn.query(
+          "INSERT INTO CompanyTransaction (id, companyId, type, amount, category, description, date) VALUES (?, ?, 'EXPENSE', ?, 'Pensje', ?, ?)",
+          [txId, companyId, parsedAmount, `Przelew: ${title}`, executionDate]
+        );
+
+        await conn.query("COMMIT");
+
+        const company = (await conn.query("SELECT balance FROM Company WHERE id = ?", [companyId]))[0];
+        const bankTransaction = (await conn.query("SELECT * FROM BankTransaction WHERE id = ?", [bankTransactionId]))[0];
+
+        return { companyBalance: company?.balance, bankTransaction };
+      } catch (txErr) {
+        await conn.query("ROLLBACK");
+        throw txErr;
       }
     });
 
-    // 4. Stwórz wpis w wydatkach firmy
-    await prisma.companyTransaction.create({
-      data: {
-        companyId: companyId,
-        type: "EXPENSE",
-        amount: amount,
-        category: "Pensje",
-        description: `Przelew: ${title}`,
-        date: executionDate,
-      }
-    });
-
-    return NextResponse.json({ success: true, companyBalance: company.balance, bankTransaction });
+    return NextResponse.json({ success: true, companyBalance: result.companyBalance, bankTransaction: result.bankTransaction });
   } catch (error) {
     console.error("Błąd podczas realizacji przelewu:", error);
     return NextResponse.json({ error: "Wystąpił błąd." }, { status: 500 });

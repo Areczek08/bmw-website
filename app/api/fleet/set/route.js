@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbRun, generateId } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -16,46 +16,26 @@ export async function PUT(req) {
       return NextResponse.json({ error: "Brak ID ciągnika" }, { status: 400 });
     }
 
-    // Pobierz stan ciągnika przed zmianami
-    const currentTruck = await prisma.truck.findUnique({
-      where: { id: truckId },
-      include: {
-        assignedDriver: { select: { name: true, discordNick: true, firstName: true } },
-        attachedTrailer: true
-      }
-    });
+    const currentTruck = await dbOne("SELECT * FROM Truck WHERE id = ?", [truckId]);
 
     if (!currentTruck) {
       return NextResponse.json({ error: "Nie znaleziono ciągnika" }, { status: 404 });
     }
 
-    // 1. Odepnij poprzedniego kierowcę od innych ciężarówek (kierowca może mieć max 1 ciężarówkę)
+    // 1. Odepnij poprzedniego kierowcę od innych ciężarówek
     if (driverId) {
-      await prisma.truck.updateMany({
-        where: { assignedDriverId: driverId },
-        data: { assignedDriverId: null, status: "AVAILABLE" }
-      });
+      await dbRun("UPDATE Truck SET assignedDriverId = NULL, status = 'AVAILABLE', updatedAt = NOW() WHERE assignedDriverId = ?", [driverId]);
     }
 
     // 2. Odepnij naczepę od innych ciężarówek
     if (trailerId) {
-      await prisma.truck.updateMany({
-        where: { attachedTrailerId: trailerId },
-        data: { attachedTrailerId: null }
-      });
-      // Ustaw też status naczepy
-      await prisma.trailer.update({
-        where: { id: trailerId },
-        data: { status: "IN_USE" }
-      });
+      await dbRun("UPDATE Truck SET attachedTrailerId = NULL, updatedAt = NOW() WHERE attachedTrailerId = ?", [trailerId]);
+      await dbRun("UPDATE Trailer SET status = 'IN_USE', updatedAt = NOW() WHERE id = ?", [trailerId]);
     }
 
     // 3. Jeśli poprzednio do Tego ciągnika przypięta była inna naczepa, to zmień jej status
     if (currentTruck.attachedTrailerId && currentTruck.attachedTrailerId !== trailerId) {
-      await prisma.trailer.update({
-        where: { id: currentTruck.attachedTrailerId },
-        data: { status: "AVAILABLE" }
-      });
+      await dbRun("UPDATE Trailer SET status = 'AVAILABLE', updatedAt = NOW() WHERE id = ?", [currentTruck.attachedTrailerId]);
     }
 
     const updateData = {
@@ -65,100 +45,50 @@ export async function PUT(req) {
       assignedAt: driverId ? (assignedAt ? new Date(assignedAt) : new Date()) : null
     };
 
-    if (imageUrl !== undefined) {
-      updateData.imageUrl = imageUrl;
-    }
+    let updateQuery = "UPDATE Truck SET assignedDriverId = ?, attachedTrailerId = ?, status = ?, assignedAt = ?, updatedAt = NOW()";
+    const updateParams = [updateData.assignedDriverId, updateData.attachedTrailerId, updateData.status, updateData.assignedAt];
 
-    // 4. Aktualizuj ciągnik
-    const updatedTruck = await prisma.truck.update({
-      where: { id: truckId },
-      data: updateData
-    });
+    if (imageUrl !== undefined) {
+      updateQuery += ", imageUrl = ?";
+      updateParams.push(imageUrl);
+    }
+    
+    updateQuery += " WHERE id = ?";
+    updateParams.push(truckId);
+
+    await dbRun(updateQuery, updateParams);
+    const updatedTruck = await dbOne("SELECT * FROM Truck WHERE id = ?", [truckId]);
 
     // 5. Zapisz historię zmian (Logi)
-    const historyPromises = [];
-
-    // Jeśli kierowca się zmienił
     if (currentTruck.assignedDriverId !== (driverId || null)) {
       let driverDesc = "Zmiana kierowcy: odpięto kierowcę od pojazdu.";
       if (driverId) {
-        const newDriver = await prisma.user.findUnique({
-          where: { id: driverId },
-          select: { name: true, discordNick: true, firstName: true }
-        });
+        const newDriver = await dbOne("SELECT name, discordNick, firstName FROM User WHERE id = ?", [driverId]);
         const newDriverName = newDriver ? (newDriver.discordNick || newDriver.firstName || newDriver.name || "Nieznany") : "Nieznany";
         driverDesc = `Zmiana kierowcy: przypisano kierowcę ${newDriverName} do pojazdu.`;
       }
-
-      historyPromises.push(
-        prisma.vehicleHistory.create({
-          data: {
-            truckId: truckId,
-            userId: session.user.id,
-            type: "DRIVER_CHANGE",
-            description: driverDesc,
-            cost: 0
-          }
-        })
-      );
+      const historyId = generateId();
+      await dbRun("INSERT INTO VehicleHistory (id, truckId, userId, type, description, cost, date) VALUES (?, ?, ?, ?, ?, 0, NOW())", [historyId, truckId, session.user.id, "DRIVER_CHANGE", driverDesc]);
     }
 
-    // Jeśli naczepa się zmieniła
     if (currentTruck.attachedTrailerId !== (trailerId || null)) {
       let trailerDesc = "Zmiana naczepy: odpięto naczepę od pojazdu.";
       if (trailerId) {
-        const newTrailer = await prisma.trailer.findUnique({
-          where: { id: trailerId },
-          select: { brand: true, model: true, plate: true }
-        });
+        const newTrailer = await dbOne("SELECT brand, model, plate FROM Trailer WHERE id = ?", [trailerId]);
         const newTrailerInfo = newTrailer ? `${newTrailer.brand} ${newTrailer.model} (${newTrailer.plate})` : "Nieznana naczepa";
         trailerDesc = `Zmiana naczepy: podpięto naczepę ${newTrailerInfo}.`;
 
-        // Log dla nowej naczepy
-        historyPromises.push(
-          prisma.vehicleHistory.create({
-            data: {
-              trailerId: trailerId,
-              userId: session.user.id,
-              type: "DRIVER_CHANGE",
-              description: `Zestaw: podpięto naczepę do ciągnika ${currentTruck.brand} ${currentTruck.model} (${currentTruck.plate}).`,
-              cost: 0
-            }
-          })
-        );
+        const hId1 = generateId();
+        await dbRun("INSERT INTO VehicleHistory (id, trailerId, userId, type, description, cost, date) VALUES (?, ?, ?, ?, ?, 0, NOW())", [hId1, trailerId, session.user.id, "DRIVER_CHANGE", `Zestaw: podpięto naczepę do ciągnika ${currentTruck.brand} ${currentTruck.model} (${currentTruck.plate}).`]);
       }
 
-      // Log dla ciągnika
-      historyPromises.push(
-        prisma.vehicleHistory.create({
-          data: {
-            truckId: truckId,
-            userId: session.user.id,
-            type: "DRIVER_CHANGE",
-            description: trailerDesc,
-            cost: 0
-          }
-        })
-      );
+      const hId2 = generateId();
+      await dbRun("INSERT INTO VehicleHistory (id, truckId, userId, type, description, cost, date) VALUES (?, ?, ?, ?, ?, 0, NOW())", [hId2, truckId, session.user.id, "DRIVER_CHANGE", trailerDesc]);
 
-      // Log dla odpiętej starej naczepy
       if (currentTruck.attachedTrailerId) {
-        historyPromises.push(
-          prisma.vehicleHistory.create({
-            data: {
-              trailerId: currentTruck.attachedTrailerId,
-              userId: session.user.id,
-              type: "DRIVER_CHANGE",
-              description: `Zestaw: odpięto naczepę od ciągnika ${currentTruck.brand} ${currentTruck.model} (${currentTruck.plate}).`,
-              cost: 0
-            }
-          })
-        );
+        const hId3 = generateId();
+        await dbRun("INSERT INTO VehicleHistory (id, trailerId, userId, type, description, cost, date) VALUES (?, ?, ?, ?, ?, 0, NOW())", [hId3, currentTruck.attachedTrailerId, session.user.id, "DRIVER_CHANGE", `Zestaw: odpięto naczepę od ciągnika ${currentTruck.brand} ${currentTruck.model} (${currentTruck.plate}).`]);
       }
-    }
-
-    if (historyPromises.length > 0) {
-      await Promise.all(historyPromises);
     }
 
     return NextResponse.json({ success: true, truck: updatedTruck });

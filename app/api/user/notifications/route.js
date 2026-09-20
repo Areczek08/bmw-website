@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbAll } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -10,19 +10,14 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
-      select: {
-        id: true,
-        probationPeriod: true,
-        bankTransactions: {
-          orderBy: { date: 'desc' },
-          take: 5
-        }
-      }
-    });
+    const user = await dbOne("SELECT id, probationPeriod FROM User WHERE id = ?", [session.user.id]);
 
     if (!user) return NextResponse.json({ notifications: [] });
+
+    const bankTransactions = await dbAll(
+      "SELECT id, amount, title, date FROM BankTransaction WHERE userId = ? ORDER BY date DESC LIMIT 5",
+      [user.id]
+    );
 
     const notifications = [];
 
@@ -42,15 +37,9 @@ export async function GET(req) {
       }
     }
 
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    
-    const recentAnnouncements = await prisma.announcement.findMany({
-      where: { createdAt: { gte: sevenDaysAgo } },
-      select: { id: true, title: true },
-      orderBy: { createdAt: 'desc' },
-      take: 2
-    });
+    const recentAnnouncements = await dbAll(
+      "SELECT id, title FROM Announcement WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 7 DAY) ORDER BY createdAt DESC LIMIT 2"
+    );
 
     recentAnnouncements.forEach(ann => {
       notifications.push({
@@ -62,8 +51,12 @@ export async function GET(req) {
       });
     });
 
-    user.bankTransactions.forEach(tx => {
-      if (tx.amount > 0 && tx.date >= sevenDaysAgo && (tx.title.toLowerCase().includes("wypłata") || tx.title.toLowerCase().includes("wynagrodzenie") || tx.title.toLowerCase().includes("premia"))) {
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    bankTransactions.forEach(tx => {
+      const txDate = new Date(tx.date);
+      if (tx.amount > 0 && txDate >= sevenDaysAgo && (tx.title.toLowerCase().includes("wypłata") || tx.title.toLowerCase().includes("wynagrodzenie") || tx.title.toLowerCase().includes("premia"))) {
         notifications.push({
           id: `bank-${tx.id}`,
           title: "Nowy przelew",

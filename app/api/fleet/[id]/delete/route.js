@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../../lib/prisma";
+import { dbRun, dbOne } from "../../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../auth/[...nextauth]/route";
 
@@ -13,40 +13,20 @@ export async function DELETE(req, { params }) {
 
     const { id } = await params;
 
-    // Najpierw sprawdzamy co to jest (ciężarówka czy naczepa), bo mają inne tabele.
-    // Uprościmy i spróbujemy usunąć z Truck, jak się nie uda, to z Trailer.
-    
-    // Należy usunąć najpierw logi (historię) pojazdu ze względu na klucze obce
-    await prisma.vehicleHistory.deleteMany({
-      where: {
-        OR: [
-          { truckId: id },
-          { trailerId: id }
-        ]
-      }
-    });
+    await dbRun("DELETE FROM VehicleHistory WHERE truckId = ? OR trailerId = ?", [id, id]);
 
-    // Odpiąć pojazd ze zleceń, żeby uniknąć błędu klucza obcego
-    await prisma.job.updateMany({
-      where: { truckId: id },
-      data: { truckId: null }
-    });
+    await dbRun("UPDATE Job SET truckId = NULL WHERE truckId = ?", [id]);
 
-    const truck = await prisma.truck.findUnique({ where: { id } });
+    const truck = await dbOne("SELECT id FROM Truck WHERE id = ?", [id]);
     
     if (truck) {
-      await prisma.truck.delete({ where: { id } });
+      await dbRun("DELETE FROM Truck WHERE id = ?", [id]);
       return NextResponse.json({ success: true, message: "Pojazd usunięty pomyślnie" });
     } else {
-      const trailer = await prisma.trailer.findUnique({ where: { id } });
+      const trailer = await dbOne("SELECT id FROM Trailer WHERE id = ?", [id]);
       if (trailer) {
-        // Odpiąć naczepę od ciężarówek
-        await prisma.truck.updateMany({
-          where: { attachedTrailerId: id },
-          data: { attachedTrailerId: null }
-        });
-
-        await prisma.trailer.delete({ where: { id } });
+        await dbRun("UPDATE Truck SET attachedTrailerId = NULL WHERE attachedTrailerId = ?", [id]);
+        await dbRun("DELETE FROM Trailer WHERE id = ?", [id]);
         return NextResponse.json({ success: true, message: "Naczepa usunięta pomyślnie" });
       } else {
         return NextResponse.json({ error: "Nie znaleziono pojazdu" }, { status: 404 });

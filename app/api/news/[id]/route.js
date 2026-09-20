@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbRun, dbOne } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -19,14 +19,13 @@ export async function PUT(req, { params }) {
       return NextResponse.json({ error: "Brakuje tytułu lub treści." }, { status: 400 });
     }
 
-    const announcement = await prisma.announcement.update({
-      where: { id },
-      data: {
-        title,
-        content,
-        isPinned: isPinned || false,
-      }
-    });
+    await dbRun("UPDATE Announcement SET title = ?, content = ?, isPinned = ?, updatedAt = NOW() WHERE id = ?", [
+      title, content, isPinned ? 1 : 0, id
+    ]);
+
+    const announcement = await dbOne("SELECT * FROM Announcement WHERE id = ?", [id]);
+
+    if (announcement) announcement.isPinned = Boolean(announcement.isPinned);
 
     return NextResponse.json(announcement);
   } catch (error) {
@@ -45,9 +44,7 @@ export async function DELETE(req, { params }) {
 
     const { id } = await params;
 
-    await prisma.announcement.delete({
-      where: { id }
-    });
+    await dbRun("DELETE FROM Announcement WHERE id = ?", [id]);
 
     return NextResponse.json({ success: true });
   } catch (error) {

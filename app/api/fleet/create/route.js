@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbRun, generateId } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -18,47 +18,23 @@ export async function POST(req) {
       return NextResponse.json({ error: "Wypełnij wymagane pola (Marka, Model, Rejestracja)" }, { status: 400 });
     }
 
+    const id = generateId();
+    const parsedProductionYear = isNaN(parseInt(productionYear)) ? 2020 : parseInt(productionYear);
+    const inCompanySinceDate = inCompanySince ? new Date(inCompanySince) : new Date();
+
     if (category === "Naczepa") {
-      const newTrailer = await prisma.trailer.create({
-        data: {
-          brand,
-          model,
-          plate,
-          productionYear: isNaN(parseInt(productionYear)) ? 2020 : parseInt(productionYear),
-          type: type || "Plandeka",
-          imageUrl: imageUrl || null,
-          status: "AVAILABLE",
-          ownershipStatus: ownershipStatus || "Własność",
-          inCompanySince: inCompanySince ? new Date(inCompanySince) : new Date(),
-        }
-      });
-      return NextResponse.json({ success: true, vehicle: newTrailer });
+      await dbRun(
+        "INSERT INTO Trailer (id, brand, model, plate, productionYear, type, imageUrl, status, ownershipStatus, inCompanySince, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
+        [id, brand, model, plate, parsedProductionYear, type || "Plandeka", imageUrl || null, "AVAILABLE", ownershipStatus || "Własność", inCompanySinceDate]
+      );
+      return NextResponse.json({ success: true, vehicle: { id, brand, model, plate, productionYear: parsedProductionYear, type: type || "Plandeka", imageUrl: imageUrl || null, status: "AVAILABLE", ownershipStatus: ownershipStatus || "Własność", inCompanySince: inCompanySinceDate } });
     } else {
-      // Ciągnik lub Bus
-      const newTruck = await prisma.truck.create({
-        data: {
-          brand,
-          model,
-          plate,
-          fleetNumber: fleetNumber || "",
-          productionYear: parseInt(productionYear) || 2020,
-          power: parseInt(power) || 500,
-          type: category, // Ciągnik, Bus
-          imageUrl: imageUrl || null,
-          status: "AVAILABLE",
-          condition: 100,
-          fuelLevel: 100,
-          cleanliness: 100,
-          mileage: 0,
-          serviceLimitKm: 80000,
-          ownershipStatus: ownershipStatus || "Własność",
-          inCompanySince: inCompanySince ? new Date(inCompanySince) : new Date(),
-          vin: vin || null,
-          location: location || null,
-          averageFuel: parseFloat(averageFuel) || 0
-        }
-      });
-      return NextResponse.json({ success: true, vehicle: newTruck });
+      const parsedPower = parseInt(power) || 500;
+      await dbRun(
+        "INSERT INTO Truck (id, brand, model, plate, fleetNumber, productionYear, power, type, imageUrl, status, `condition`, fuelLevel, cleanliness, mileage, serviceLimitKm, ownershipStatus, inCompanySince, vin, location, averageFuel, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
+        [id, brand, model, plate, fleetNumber || "", parsedProductionYear, parsedPower, category, imageUrl || null, "AVAILABLE", 100, 100, 100, 0, 80000, ownershipStatus || "Własność", inCompanySinceDate, vin || null, location || null, parseFloat(averageFuel) || 0]
+      );
+      return NextResponse.json({ success: true, vehicle: { id, brand, model, plate, fleetNumber: fleetNumber || "", productionYear: parsedProductionYear, power: parsedPower, type: category, imageUrl: imageUrl || null, status: "AVAILABLE", condition: 100, fuelLevel: 100, cleanliness: 100, mileage: 0, serviceLimitKm: 80000, ownershipStatus: ownershipStatus || "Własność", inCompanySince: inCompanySinceDate, vin: vin || null, location: location || null, averageFuel: parseFloat(averageFuel) || 0 } });
     }
 
   } catch (error) {

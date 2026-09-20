@@ -1,4 +1,4 @@
-import { prisma } from "../../../../lib/prisma";
+import { dbAll } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../api/auth/[...nextauth]/route";
 import { redirect } from "next/navigation";
@@ -13,28 +13,21 @@ export default async function ApprovalsPage() {
     redirect("/dashboard");
   }
 
-  const pendingUsers = await prisma.user.findMany({
-    where: { driverStatus: "WAITING_FOR_APPROVAL" },
-    orderBy: { createdAt: "desc" },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      createdAt: true,
-      discordNick: true,
-      firstName: true,
-    }
-  });
+  let pendingUsers = [];
+  let availableTrucks = [];
+  
+  try {
+    pendingUsers = await dbAll(
+      "SELECT id, name, email, createdAt, discordNick, firstName FROM User WHERE driverStatus = ? ORDER BY createdAt DESC",
+      ["WAITING_FOR_APPROVAL"]
+    );
 
-  const availableTrucks = await prisma.truck.findMany({
-    where: { assignedDriverId: null },
-    select: {
-      id: true,
-      brand: true,
-      model: true,
-      plate: true,
-    }
-  });
+    availableTrucks = await dbAll(
+      "SELECT id, brand, model, plate FROM Truck WHERE assignedDriverId IS NULL"
+    );
+  } catch (error) {
+    console.error("Błąd pobierania danych akceptacji:", error);
+  }
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbRun } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -10,10 +10,7 @@ export async function PUT(req) {
       return NextResponse.json({ error: "Brak dostępu." }, { status: 401 });
     }
 
-    await prisma.user.update({
-      where: { id: session.user.id },
-      data: { lastOnline: new Date() }
-    });
+    await dbRun("UPDATE User SET lastOnline = NOW() WHERE id = ?", [session.user.id]);
 
     return NextResponse.json({ success: true });
   } catch (error) {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbAll } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 import { getBaseDetails } from "../../../../lib/bases";
@@ -14,69 +14,50 @@ export async function GET(req, { params }) {
 
     const { id } = await params;
 
-    // Najpierw sprawdzamy, czy to Truck
-    let vehicle = await prisma.truck.findUnique({
-      where: { id },
-      include: {
-        companyBase: true,
-        assignedDriver: {
-          select: { 
-            name: true, 
-            id: true,
-            jobs: {
-              where: { status: "APPROVED" },
-              orderBy: { date: "desc" },
-              take: 1,
-              select: { endCity: true }
-            }
-          }
-        },
-        attachedTrailer: true,
-        history: {
-          orderBy: { date: "desc" }
-        }
-      }
-    });
-
+    let vehicle = await dbOne("SELECT * FROM Truck WHERE id = ?", [id]);
     let vehicleType = "truck";
 
-    // Jeśli to nie Truck, może to Trailer
-    if (!vehicle) {
-      vehicle = await prisma.trailer.findUnique({
-        where: { id },
-        include: {
-          attachedTruck: {
-            select: { 
-              fleetNumber: true, 
-              plate: true, 
-              id: true,
-              assignedDriver: {
-                select: {
-                  name: true,
-                  id: true,
-                  jobs: {
-                    where: { status: "APPROVED" },
-                    orderBy: { date: "desc" },
-                    take: 1,
-                    select: { endCity: true }
-                  }
-                }
-              }
-            }
-          },
-          history: {
-            orderBy: { date: "desc" }
-          }
+    if (vehicle) {
+      if (vehicle.companyId) {
+        const base = await dbOne("SELECT * FROM Company WHERE id = ?", [vehicle.companyId]);
+        vehicle.companyBase = base;
+      }
+      if (vehicle.assignedDriverId) {
+        const driver = await dbOne("SELECT id, name FROM User WHERE id = ?", [vehicle.assignedDriverId]);
+        if (driver) {
+          const jobs = await dbAll("SELECT endCity FROM Job WHERE userId = ? AND status = 'APPROVED' ORDER BY date DESC LIMIT 1", [driver.id]);
+          driver.jobs = jobs;
         }
-      });
-      vehicleType = "trailer";
+        vehicle.assignedDriver = driver || null;
+      }
+      if (vehicle.attachedTrailerId) {
+        vehicle.attachedTrailer = await dbOne("SELECT * FROM Trailer WHERE id = ?", [vehicle.attachedTrailerId]);
+      }
+      vehicle.history = await dbAll("SELECT * FROM VehicleHistory WHERE truckId = ? ORDER BY date DESC", [id]);
+    } else {
+      vehicle = await dbOne("SELECT * FROM Trailer WHERE id = ?", [id]);
+      if (vehicle) {
+        vehicleType = "trailer";
+        const attachedTruck = await dbOne("SELECT id, fleetNumber, plate, assignedDriverId FROM Truck WHERE attachedTrailerId = ?", [id]);
+        if (attachedTruck) {
+          if (attachedTruck.assignedDriverId) {
+            const driver = await dbOne("SELECT id, name FROM User WHERE id = ?", [attachedTruck.assignedDriverId]);
+            if (driver) {
+              const jobs = await dbAll("SELECT endCity FROM Job WHERE userId = ? AND status = 'APPROVED' ORDER BY date DESC LIMIT 1", [driver.id]);
+              driver.jobs = jobs;
+            }
+            attachedTruck.assignedDriver = driver || null;
+          }
+          vehicle.attachedTruck = attachedTruck;
+        }
+        vehicle.history = await dbAll("SELECT * FROM VehicleHistory WHERE trailerId = ? ORDER BY date DESC", [id]);
+      }
     }
 
     if (!vehicle) {
       return NextResponse.json({ error: "Nie znaleziono pojazdu" }, { status: 404 });
     }
 
-    // Jeśli pojazd ma bazę, dodaj jej rozszerzone dane
     if (vehicle.companyBase) {
       const details = getBaseDetails(vehicle.companyBase.id);
       vehicle.companyBase = {

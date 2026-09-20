@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../lib/prisma";
+import { dbOne, dbAll, dbRun } from "../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../auth/[...nextauth]/route";
 
@@ -22,20 +22,10 @@ export async function GET(req) {
 
     const companyId = session.user.companyId || "BMS";
 
-    const jobsLast7Days = await prisma.job.findMany({
-      where: {
-        status: "APPROVED",
-        date: {
-          gte: sevenDaysAgo,
-          lte: today,
-        },
-        user: { companyId: companyId }
-      },
-      select: {
-        date: true,
-        distance: true,
-      }
-    });
+    const jobsLast7Days = await dbAll(
+      "SELECT date, distance FROM Job WHERE status = ? AND date >= ? AND date <= ? AND userId IN (SELECT id FROM User WHERE companyId = ?)",
+      ["APPROVED", sevenDaysAgo, today, companyId]
+    );
 
     let eurRate = 4.3;
     try {
@@ -66,12 +56,11 @@ export async function GET(req) {
       });
     }
 
-    let company = await prisma.company.findUnique({
-      where: { id: companyId }
-    });
+    let company = await dbOne("SELECT * FROM Company WHERE id = ?", [companyId]);
     
     if (!company) {
-      company = await prisma.company.create({ data: { id: companyId } });
+      await dbRun("INSERT INTO Company (id, createdAt, updatedAt) VALUES (?, NOW(), NOW())", [companyId]);
+      company = await dbOne("SELECT * FROM Company WHERE id = ?", [companyId]);
     }
 
     const ratePerKm = company.revenuePerKmEur || (companyId === "BMS" ? 1.60 : 1.20);
@@ -100,21 +89,12 @@ export async function GET(req) {
     const fourteenDaysAgo = new Date(sevenDaysAgo);
     fourteenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
-    const jobsPrevious7Days = await prisma.job.aggregate({
-      where: {
-        status: "APPROVED",
-        date: {
-          gte: fourteenDaysAgo,
-          lt: sevenDaysAgo,
-        },
-        user: { companyId: companyId }
-      },
-      _sum: {
-        distance: true
-      }
-    });
+    const previousJobsAgg = await dbOne(
+      "SELECT COALESCE(SUM(distance), 0) as totalDistance FROM Job WHERE status = ? AND date >= ? AND date < ? AND userId IN (SELECT id FROM User WHERE companyId = ?)",
+      ["APPROVED", fourteenDaysAgo, sevenDaysAgo, companyId]
+    );
     
-    const previousDistance = jobsPrevious7Days._sum.distance || 0;
+    const previousDistance = Number(previousJobsAgg.totalDistance) || 0;
     const previousIncome = previousDistance * ratePerKm * eurRate;
     let growth = 0;
     
@@ -124,19 +104,10 @@ export async function GET(req) {
       growth = 100;
     }
 
-    const drivers = await prisma.user.findMany({
-      where: { 
-        companyId: companyId,
-        driverStatus: {
-          notIn: ["WAITING_FOR_APPROVAL", "INACTIVE"]
-        }
-      },
-      select: {
-        id: true,
-        name: true,
-        accountBalance: true
-      }
-    });
+    const drivers = await dbAll(
+      "SELECT id, name, accountBalance FROM User WHERE companyId = ? AND driverStatus NOT IN (?, ?)",
+      [companyId, "WAITING_FOR_APPROVAL", "INACTIVE"]
+    );
 
     return NextResponse.json({ 
       data: chartData,

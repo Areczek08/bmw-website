@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/route";
-import { prisma } from "../../../../lib/prisma";
+import { dbAll, dbOne, dbRun, generateId } from "../../../../lib/db";
 
 export async function GET(req) {
   try {
@@ -10,16 +10,30 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak uprawnień" }, { status: 403 });
     }
 
-    const insurances = await prisma.insurance.findMany({
-      include: {
-        truck: { select: { id: true, plate: true, brand: true, model: true } },
-        trailer: { select: { id: true, plate: true, brand: true, type: true } },
-        payments: true
-      }
-    });
+    const insurancesRaw = await dbAll("SELECT * FROM Insurance");
+    const insuranceIds = insurancesRaw.map(i => i.id);
 
-    const trucks = await prisma.truck.findMany({ select: { id: true, plate: true, brand: true, model: true } });
-    const trailers = await prisma.trailer.findMany({ select: { id: true, plate: true, brand: true, type: true } });
+    let paymentsMap = {};
+    if (insuranceIds.length > 0) {
+      const placeholders = insuranceIds.map(() => '?').join(',');
+      const allPayments = await dbAll(`SELECT * FROM InsurancePayment WHERE insuranceId IN (${placeholders})`, insuranceIds);
+      allPayments.forEach(p => {
+        if (!paymentsMap[p.insuranceId]) paymentsMap[p.insuranceId] = [];
+        paymentsMap[p.insuranceId].push(p);
+      });
+    }
+
+    const trucks = await dbAll("SELECT id, plate, brand, model FROM Truck");
+    const trailers = await dbAll("SELECT id, plate, brand, type FROM Trailer");
+
+    const insurances = insurancesRaw.map(i => {
+      return {
+        ...i,
+        truck: i.truckId ? trucks.find(t => t.id === i.truckId) || null : null,
+        trailer: i.trailerId ? trailers.find(t => t.id === i.trailerId) || null : null,
+        payments: paymentsMap[i.id] || []
+      };
+    });
 
     return NextResponse.json({ success: true, insurances, trucks, trailers });
   } catch (error) {
@@ -41,24 +55,25 @@ export async function POST(req) {
       return NextResponse.json({ error: "Brak wymaganych danych" }, { status: 400 });
     }
 
-    const existing = await prisma.insurance.findFirst({
-      where: { OR: [{ truckId: truckId || undefined }, { trailerId: trailerId || undefined }] }
-    });
+    let existing = null;
+    if (truckId) {
+      existing = await dbOne("SELECT * FROM Insurance WHERE truckId = ?", [truckId]);
+    } else if (trailerId) {
+      existing = await dbOne("SELECT * FROM Insurance WHERE trailerId = ?", [trailerId]);
+    }
 
     if (existing) {
       return NextResponse.json({ error: "Ten pojazd ma już przypisane ubezpieczenie w systemie" }, { status: 400 });
     }
 
-    const insurance = await prisma.insurance.create({
-      data: {
-        type,
-        yearlyCost: parseFloat(yearlyCost),
-        monthlyRate: parseFloat(yearlyCost) / 12,
-        validUntil: new Date(validUntil),
-        truckId: truckId || null,
-        trailerId: trailerId || null,
-      }
-    });
+    const id = generateId();
+    const monthlyRate = parseFloat(yearlyCost) / 12;
+    await dbRun(
+      "INSERT INTO Insurance (id, type, yearlyCost, monthlyRate, validUntil, truckId, trailerId) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [id, type, parseFloat(yearlyCost), monthlyRate, new Date(validUntil), truckId || null, trailerId || null]
+    );
+
+    const insurance = await dbOne("SELECT * FROM Insurance WHERE id = ?", [id]);
 
     return NextResponse.json({ success: true, insurance });
   } catch (error) {

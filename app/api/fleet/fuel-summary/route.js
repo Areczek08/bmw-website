@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbAll } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -11,40 +11,31 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
     }
 
-    // Get current month boundaries
     const date = new Date();
     const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
     const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59);
 
-    // Fetch REFUEL history for the current month
-    const history = await prisma.vehicleHistory.findMany({
-      where: {
-        type: "REFUEL",
-        date: {
-          gte: firstDay,
-          lte: lastDay
-        }
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            image: true
-          }
-        }
+    const history = await dbAll("SELECT * FROM VehicleHistory WHERE type = 'REFUEL' AND date >= ? AND date <= ?", [firstDay, lastDay]);
+    
+    let users = [];
+    if (history.length > 0) {
+      const userIds = [...new Set(history.map(h => h.userId).filter(Boolean))];
+      if (userIds.length > 0) {
+        users = await dbAll(`SELECT id, name, image FROM User WHERE id IN (${userIds.map(() => '?').join(',')})`, userIds);
       }
-    });
+    }
 
-    // Aggregate by user
     const userSummary = {};
 
     history.forEach(entry => {
-      if (!entry.user) return;
-      const userId = entry.user.id;
+      const userId = entry.userId;
+      if (!userId) return;
+      const user = users.find(u => u.id === userId);
+      if (!user) return;
+      
       if (!userSummary[userId]) {
         userSummary[userId] = {
-          user: entry.user,
+          user: user,
           totalCost: 0,
           refuelCount: 0
         };

@@ -294,8 +294,8 @@ export default function FuelPage() {
   };
 
   const filteredLogs = logs.filter(log => {
-    const driverMatch = filterDriver ? (log.user.firstName || log.user.name).toLowerCase().includes(filterDriver.toLowerCase()) : true;
-    const truckMatch = filterTruck ? log.truck.plate.toLowerCase().includes(filterTruck.toLowerCase()) : true;
+    const driverMatch = filterDriver ? ((log.user?.firstName || log.user?.name || "")).toLowerCase().includes(filterDriver.toLowerCase()) : true;
+    const truckMatch = filterTruck ? ((log.truck?.plate || "")).toLowerCase().includes(filterTruck.toLowerCase()) : true;
     return driverMatch && truckMatch;
   });
 

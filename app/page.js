@@ -1,8 +1,9 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Truck, Wallet, FileText, Globe2 } from "lucide-react";
+import { Truck, Wallet, FileText, Globe2, LogIn, UserPlus, LayoutDashboard } from "lucide-react";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 
 const features = [
   {
@@ -28,6 +29,9 @@ const features = [
 ];
 
 export default function Home() {
+  const { data: session, status } = useSession();
+  const isAuthenticated = status === "authenticated" && !!session?.user;
+
   return (
     <div className="flex flex-col items-center justify-center py-20 min-h-screen">
       <motion.div
@@ -55,23 +59,49 @@ export default function Home() {
           Nasz system BMS w wersji 3.06.01 umożliwia kompleksowe zarządzanie flotą: monitorowanie tras w czasie rzeczywistym, zarządzanie HR (kierowcami), integrację z flotą pojazdów i generowanie raportów efektywności.
         </p>
 
-        <div className="flex flex-col sm:flex-row gap-4 justify-center">
-          <Link href="/dashboard">
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              className="px-8 py-3.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-zinc-200 dark:text-zinc-900 font-medium shadow-lg transition-all w-full sm:w-auto text-lg"
-            >
-              Zaloguj się
-            </motion.button>
-          </Link>
+        <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
+          {isAuthenticated ? (
+            <Link href="/dashboard">
+              <motion.button
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                className="flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow-lg transition-all w-full sm:w-auto text-base"
+              >
+                <LayoutDashboard className="w-5 h-5" />
+                Otwórz Pulpit BMS
+              </motion.button>
+            </Link>
+          ) : (
+            <>
+              <Link href="/login">
+                <motion.button
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  className="flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-zinc-200 dark:text-zinc-900 font-semibold shadow-lg transition-all w-full sm:w-auto text-base"
+                >
+                  <LogIn className="w-5 h-5" />
+                  Zaloguj się
+                </motion.button>
+              </Link>
+              <Link href="/register">
+                <motion.button
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  className="flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200 border border-zinc-700 font-semibold shadow-sm transition-all w-full sm:w-auto text-base"
+                >
+                  <UserPlus className="w-5 h-5" />
+                  Zarejestruj się
+                </motion.button>
+              </Link>
+            </>
+          )}
           <a href="https://vsbojarlogistic.pl" target="_blank" rel="noopener noreferrer">
             <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              className="px-8 py-3.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-900 dark:text-zinc-100 font-medium transition-all w-full sm:w-auto text-lg border border-zinc-300 dark:border-zinc-700"
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+              className="px-8 py-3.5 rounded-xl bg-zinc-200 dark:bg-zinc-900 hover:bg-zinc-300 dark:hover:bg-zinc-800 text-zinc-900 dark:text-zinc-300 font-medium transition-all w-full sm:w-auto text-base border border-zinc-300 dark:border-zinc-800"
             >
-              O Nas
+              Strona Główna Firmy
             </motion.button>
           </a>
         </div>

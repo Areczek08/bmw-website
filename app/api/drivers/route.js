@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../lib/prisma";
+import { dbAll } from "../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../auth/[...nextauth]/route";
 import { getSafeAvatarUrl } from "../../../lib/avatar";
@@ -12,66 +12,83 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
     }
 
-    const companyFilter = session.user.role === "OWNER" ? {} : { companyId: session.user.companyId || "BMS" };
+    let driversQuery = `
+      SELECT 
+        u.id, u.name, u.firstName, u.discordNick, u.image, u.role, u.driverStatus, 
+        u.rank, u.monthlyLimitKm, u.totalDrivenKm, u.createdAt, u.lastOnline, 
+        u.ecoScore, u.displayOrder,
+        t.id as truck_id, t.fleetNumber as truck_fleetNumber, t.brand as truck_brand, 
+        t.model as truck_model, t.plate as truck_plate, t.attachedTrailerId as truck_attachedTrailerId
+      FROM User u
+      LEFT JOIN Truck t ON t.assignedDriverId = u.id
+      WHERE u.driverStatus NOT IN ('WAITING_FOR_APPROVAL', 'INACTIVE')
+    `;
+    
+    let params = [];
+    if (session.user.role !== "OWNER") {
+      driversQuery += ` AND u.companyId = ?`;
+      params.push(session.user.companyId || "BMS");
+    }
 
-    const drivers = await prisma.user.findMany({
-      where: {
-        ...companyFilter,
-        driverStatus: {
-          notIn: ["WAITING_FOR_APPROVAL", "INACTIVE"]
-        }
-      },
-      select: {
-        id: true,
-        name: true,
-        firstName: true,
-        discordNick: true,
-        image: true,
-        role: true,
-        driverStatus: true,
-        rank: true,
-        monthlyLimitKm: true,
-        totalDrivenKm: true,
-        createdAt: true,
-        lastOnline: true,
-        ecoScore: true,
-        displayOrder: true,
-        assignedTruck: {
-          select: {
-            fleetNumber: true,
-            brand: true,
-            model: true,
-            plate: true,
-            attachedTrailer: {
-              select: {
-                type: true,
-                plate: true,
-              }
-            }
-          }
-        }
-      },
-      orderBy: [
-        { createdAt: "asc" },
-      ],
+    driversQuery += ` ORDER BY u.createdAt ASC`;
+
+    const driversRaw = await dbAll(driversQuery, params);
+
+    // Get trailer info for those with attached trailers
+    const trailerIds = driversRaw.filter(d => d.truck_attachedTrailerId).map(d => d.truck_attachedTrailerId);
+    let trailers = [];
+    if (trailerIds.length > 0) {
+      const placeholders = trailerIds.map(() => '?').join(',');
+      trailers = await dbAll(`SELECT id, type, plate FROM Trailer WHERE id IN (${placeholders})`, trailerIds);
+    }
+
+    // Map to objects
+    const drivers = driversRaw.map(row => {
+      const driver = {
+        id: row.id,
+        name: row.name,
+        firstName: row.firstName,
+        discordNick: row.discordNick,
+        image: row.image,
+        role: row.role,
+        driverStatus: row.driverStatus,
+        rank: row.rank,
+        monthlyLimitKm: row.monthlyLimitKm,
+        totalDrivenKm: row.totalDrivenKm,
+        createdAt: row.createdAt,
+        lastOnline: row.lastOnline,
+        ecoScore: row.ecoScore,
+        displayOrder: row.displayOrder,
+      };
+
+      if (row.truck_id) {
+        const trailer = trailers.find(tr => tr.id === row.truck_attachedTrailerId);
+        driver.assignedTruck = {
+          fleetNumber: row.truck_fleetNumber,
+          brand: row.truck_brand,
+          model: row.truck_model,
+          plate: row.truck_plate,
+          attachedTrailer: trailer ? {
+            type: trailer.type,
+            plate: trailer.plate,
+          } : null
+        };
+      } else {
+        driver.assignedTruck = null;
+      }
+      return driver;
     });
 
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
 
-    const jobsThisMonth = await prisma.job.groupBy({
-      by: ['userId'],
-      where: {
-        status: 'APPROVED',
-        date: {
-          gte: startOfMonth,
-        }
-      },
-      _sum: {
-        distance: true,
-      }
-    });
+    const jobsThisMonth = await dbAll(`
+      SELECT userId, SUM(distance) as totalDistance
+      FROM Job
+      WHERE status = 'APPROVED' AND date >= ?
+      GROUP BY userId
+    `, [startOfMonth]);
 
     const driversWithStats = drivers.map(driver => {
       const userJobs = jobsThisMonth.find(j => j.userId === driver.id);
@@ -93,7 +110,7 @@ export async function GET(req) {
         ...driver,
         image: getSafeAvatarUrl(driver),
         status: computedStatus,
-        currentMonthKm: userJobs?._sum?.distance || 0,
+        currentMonthKm: userJobs ? Number(userJobs.totalDistance || 0) : 0,
         truck: driver.assignedTruck ? `${driver.assignedTruck.brand} ${driver.assignedTruck.model}` : null,
         truckPlate: driver.assignedTruck?.plate || null,
         trailer: driver.assignedTruck?.attachedTrailer ? driver.assignedTruck.attachedTrailer.type : null,

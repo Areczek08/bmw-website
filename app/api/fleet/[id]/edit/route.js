@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../../lib/prisma";
+import { dbRun, dbOne } from "../../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../auth/[...nextauth]/route";
 
@@ -15,43 +15,35 @@ export async function PUT(req, { params }) {
     const body = await req.json();
     const { category, brand, model, plate, fleetNumber, productionYear, power, type, imageUrl, mileage, status, ownershipStatus, inCompanySince, vin, location, averageFuel } = body;
 
+    const inCompanySinceVal = inCompanySince ? new Date(inCompanySince) : null;
+
     if (category === "Naczepa") {
-      const updatedTrailer = await prisma.trailer.update({
-        where: { id },
-        data: {
-          brand,
-          model,
-          plate,
-          productionYear: parseInt(productionYear) || 2020,
-          type,
-          imageUrl,
-          status,
-          ownershipStatus,
-          inCompanySince: inCompanySince ? new Date(inCompanySince) : undefined
-        }
-      });
+      let query = "UPDATE Trailer SET brand = ?, model = ?, plate = ?, productionYear = ?, type = ?, imageUrl = ?, status = ?, ownershipStatus = ?, updatedAt = NOW()";
+      const queryParams = [brand, model, plate, parseInt(productionYear) || 2020, type, imageUrl, status, ownershipStatus];
+      
+      if (inCompanySinceVal) {
+        query += ", inCompanySince = ?";
+        queryParams.push(inCompanySinceVal);
+      }
+      query += " WHERE id = ?";
+      queryParams.push(id);
+      
+      await dbRun(query, queryParams);
+      const updatedTrailer = await dbOne("SELECT * FROM Trailer WHERE id = ?", [id]);
       return NextResponse.json({ success: true, vehicle: updatedTrailer });
     } else {
-      const updatedTruck = await prisma.truck.update({
-        where: { id },
-        data: {
-          brand,
-          model,
-          plate,
-          fleetNumber,
-          productionYear: parseInt(productionYear) || 2020,
-          power: parseInt(power) || 500,
-          type,
-          imageUrl,
-          mileage: parseInt(mileage) || 0,
-          status,
-          ownershipStatus,
-          inCompanySince: inCompanySince ? new Date(inCompanySince) : undefined,
-          vin,
-          location,
-          averageFuel: parseFloat(averageFuel) || 0
-        }
-      });
+      let query = "UPDATE Truck SET brand = ?, model = ?, plate = ?, fleetNumber = ?, productionYear = ?, power = ?, type = ?, imageUrl = ?, mileage = ?, status = ?, ownershipStatus = ?, vin = ?, location = ?, averageFuel = ?, updatedAt = NOW()";
+      const queryParams = [brand, model, plate, fleetNumber, parseInt(productionYear) || 2020, parseInt(power) || 500, type, imageUrl, parseInt(mileage) || 0, status, ownershipStatus, vin, location, parseFloat(averageFuel) || 0];
+
+      if (inCompanySinceVal) {
+        query += ", inCompanySince = ?";
+        queryParams.push(inCompanySinceVal);
+      }
+      query += " WHERE id = ?";
+      queryParams.push(id);
+
+      await dbRun(query, queryParams);
+      const updatedTruck = await dbOne("SELECT * FROM Truck WHERE id = ?", [id]);
       return NextResponse.json({ success: true, vehicle: updatedTruck });
     }
   } catch (error) {

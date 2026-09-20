@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbAll, dbRun } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
-
 import { getSafeAvatarUrl } from "../../../../lib/avatar";
 
 export const dynamic = "force-dynamic";
@@ -15,20 +14,20 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
     }
 
-    // Pobranie danych gracza i jego przypisanego pojazdu
-    const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
-      include: {
-        assignedTruck: {
-          include: {
-            attachedTrailer: true
-          }
-        },
-      }
-    });
+    // Pobranie danych gracza
+    const user = await dbOne("SELECT * FROM User WHERE id = ?", [session.user.id]);
 
     if (!user) {
       return NextResponse.json({ error: "Nie znaleziono profilu." }, { status: 404 });
+    }
+
+    // Pobranie przypisanego pojazdu i naczepy (Truck points to User via assignedDriverId)
+    const assignedTruck = await dbOne("SELECT * FROM Truck WHERE assignedDriverId = ?", [user.id]);
+    if (assignedTruck) {
+      user.assignedTruck = assignedTruck;
+      if (assignedTruck.attachedTrailerId) {
+        user.assignedTruck.attachedTrailer = await dbOne("SELECT * FROM Trailer WHERE id = ?", [assignedTruck.attachedTrailerId]);
+      }
     }
 
     // Obliczenia statystyk miesięcznych (dla tego konkretnego użytkownika)
@@ -36,29 +35,25 @@ export async function GET(req) {
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
 
-    const userJobsThisMonth = await prisma.job.findMany({
-      where: {
-        userId: user.id,
-        status: 'APPROVED',
-        date: { gte: startOfMonth }
-      }
-    });
+    const userJobsThisMonth = await dbAll(
+      "SELECT distance, averageFuel FROM Job WHERE userId = ? AND status = ? AND date >= ?",
+      [user.id, 'APPROVED', startOfMonth]
+    );
 
-    const totalJobsCount = await prisma.job.count({
-      where: {
-        userId: user.id,
-        status: 'APPROVED'
-      }
-    });
+    const countResult = await dbOne(
+      "SELECT COUNT(*) as count FROM Job WHERE userId = ? AND status = ?",
+      [user.id, 'APPROVED']
+    );
+    const totalJobsCount = Number(countResult?.count || 0);
 
     let monthlyDistance = 0;
     let totalAverageFuel = 0;
     let jobsWithFuelData = 0;
 
     userJobsThisMonth.forEach(job => {
-      monthlyDistance += job.distance;
+      monthlyDistance += Number(job.distance || 0);
       if (job.averageFuel && job.averageFuel > 0) {
-        totalAverageFuel += job.averageFuel;
+        totalAverageFuel += Number(job.averageFuel);
         jobsWithFuelData++;
       }
     });
@@ -66,48 +61,27 @@ export async function GET(req) {
     const averageFuel = jobsWithFuelData > 0 ? (totalAverageFuel / jobsWithFuelData).toFixed(2) : 0;
 
     // Pobranie dystansu całej firmy w tym miesiącu (wszyscy kierowcy)
-    const companyJobsThisMonth = await prisma.job.aggregate({
-      where: {
-        status: 'APPROVED',
-        date: { gte: startOfMonth }
-      },
-      _sum: { distance: true }
-    });
-
-    const companyDistance = companyJobsThisMonth._sum.distance || 0;
+    const companyJobsAgg = await dbOne(
+      "SELECT COALESCE(SUM(distance), 0) as totalDistance FROM Job WHERE status = ? AND date >= ?",
+      ['APPROVED', startOfMonth]
+    );
+    const companyDistance = Number(companyJobsAgg?.totalDistance || 0);
 
     // Pobranie ostatnich tras użytkownika
-    const recentJobs = await prisma.job.findMany({
-      where: { userId: user.id },
-      orderBy: { createdAt: 'desc' },
-      take: 4,
-      select: {
-        id: true,
-        startCity: true,
-        endCity: true,
-        cargo: true,
-        distance: true,
-        status: true,
-        date: true,
-        createdAt: true
-      }
-    });
+    const recentJobs = await dbAll(
+      "SELECT id, startCity, endCity, cargo, distance, status, date, createdAt FROM Job WHERE userId = ? ORDER BY createdAt DESC LIMIT 4",
+      [user.id]
+    );
 
-    // Wyznaczenie automatycznego statusu kierowcy:
-    // 1. Jeśli użytkownik ma wniosek urlopowy zaakceptowany lub przypisane ON_LEAVE -> ON_LEAVE
-    // 2. Jeśli ostatni heartbeat (lastOnline) był w ciągu ostatnich 5 minut -> ACTIVE (Aktywny)
-    // 3. W przeciwnym razie -> OFFLINE (Nieaktywny)
+    // Wyznaczenie automatycznego statusu kierowcy
     let calculatedStatus = "OFFLINE";
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
     // Sprawdzenie czy jest aktywny urlop
-    const activeVacationRequest = await prisma.request.findFirst({
-      where: {
-        userId: user.id,
-        type: { in: ['VACATION', 'URLOP', 'Urlop'] },
-        status: 'APPROVED'
-      }
-    });
+    const activeVacationRequest = await dbOne(
+      "SELECT id FROM Request WHERE userId = ? AND type IN ('VACATION', 'URLOP', 'Urlop') AND status = 'APPROVED' LIMIT 1",
+      [user.id]
+    );
 
     if (user.driverStatus === "ON_LEAVE" || activeVacationRequest) {
       calculatedStatus = "ON_LEAVE";
@@ -120,38 +94,24 @@ export async function GET(req) {
     // Ranking Top 3 Kierowców miesiąca
     let topDrivers = [];
     try {
-      const topDriversRaw = await prisma.job.groupBy({
-        by: ['userId'],
-        where: {
-          status: 'APPROVED',
-          date: { gte: startOfMonth }
-        },
-        _sum: {
-          distance: true
-        },
-        _count: {
-          id: true
-        },
-        orderBy: {
-          _sum: {
-            distance: 'desc'
-          }
-        },
-        take: 3
-      });
+      const topDriversRaw = await dbAll(
+        `SELECT userId, SUM(distance) as totalDistance, COUNT(id) as jobsCount 
+         FROM Job 
+         WHERE status = ? AND date >= ? 
+         GROUP BY userId 
+         ORDER BY totalDistance DESC LIMIT 3`,
+        ['APPROVED', startOfMonth]
+      );
 
       const topDriverUserIds = topDriversRaw.map(t => t.userId);
-      const topDriverUsers = await prisma.user.findMany({
-        where: { id: { in: topDriverUserIds } },
-        select: {
-          id: true,
-          name: true,
-          firstName: true,
-          discordNick: true,
-          image: true,
-          rank: true
-        }
-      });
+      let topDriverUsers = [];
+      if (topDriverUserIds.length > 0) {
+        const placeholders = topDriverUserIds.map(() => '?').join(',');
+        topDriverUsers = await dbAll(
+          `SELECT id, name, firstName, discordNick, image, rank FROM User WHERE id IN (${placeholders})`,
+          topDriverUserIds
+        );
+      }
 
       topDrivers = topDriversRaw.map((t, idx) => {
         const u = topDriverUsers.find(usr => usr.id === t.userId);
@@ -160,32 +120,28 @@ export async function GET(req) {
           id: t.userId,
           name: u?.firstName || u?.discordNick || u?.name || "Kierowca",
           rank: u?.rank || "Kierowca",
-          image: getSafeAvatarUrl(u),
-          distance: t._sum.distance || 0,
-          jobsCount: t._count.id || 0
+          image: getSafeAvatarUrl(u || {}),
+          distance: Number(t.totalDistance || 0),
+          jobsCount: Number(t.jobsCount || 0)
         };
       });
 
       // Jeśli w tym miesiącu jest mniej niż 3 kierowców z ładunkami, uzupełnij z listy User
       if (topDrivers.length < 3) {
         const existingIds = topDrivers.map(t => t.id);
-        const additionalUsers = await prisma.user.findMany({
-          where: {
-            id: { notIn: existingIds },
-            driverStatus: { not: 'WAITING_FOR_APPROVAL' }
-          },
-          orderBy: { totalDrivenKm: 'desc' },
-          take: 3 - topDrivers.length,
-          select: {
-            id: true,
-            name: true,
-            firstName: true,
-            discordNick: true,
-            image: true,
-            rank: true,
-            totalDrivenKm: true
-          }
-        });
+        let additionalUsersQuery = `SELECT id, name, firstName, discordNick, image, rank, totalDrivenKm FROM User WHERE driverStatus != 'WAITING_FOR_APPROVAL'`;
+        let queryParams = [];
+        
+        if (existingIds.length > 0) {
+            const placeholders = existingIds.map(() => '?').join(',');
+            additionalUsersQuery += ` AND id NOT IN (${placeholders})`;
+            queryParams.push(...existingIds);
+        }
+        
+        additionalUsersQuery += ` ORDER BY totalDrivenKm DESC LIMIT ?`;
+        queryParams.push(3 - topDrivers.length);
+        
+        const additionalUsers = await dbAll(additionalUsersQuery, queryParams);
 
         additionalUsers.forEach((u, idx) => {
           topDrivers.push({
@@ -194,7 +150,7 @@ export async function GET(req) {
             name: u.firstName || u.discordNick || u.name || "Kierowca",
             rank: u.rank || "Kierowca",
             image: getSafeAvatarUrl(u),
-            distance: u.totalDrivenKm || 0,
+            distance: Number(u.totalDrivenKm || 0),
             jobsCount: 0
           });
         });
@@ -214,11 +170,11 @@ export async function GET(req) {
         rank: user.rank,
         role: user.role,
         driverStatus: calculatedStatus,
-        balance: user.accountBalance,
-        vacationDays: user.vacationDays,
-        praises: user.praises,
-        reprimands: user.reprimands,
-        totalDrivenKm: user.totalDrivenKm,
+        balance: Number(user.accountBalance || 0),
+        vacationDays: Number(user.vacationDays || 0),
+        praises: Number(user.praises || 0),
+        reprimands: Number(user.reprimands || 0),
+        totalDrivenKm: Number(user.totalDrivenKm || 0),
         totalJobsCount: totalJobsCount,
         monthlyDistance: monthlyDistance,
         monthlyLimit: user.monthlyLimitKm || 10000,
@@ -273,7 +229,6 @@ export async function GET(req) {
 }
 
 export async function POST(req) {
-  // Ten sam endpoint obsłuży akcje RPG typu "Zatankuj", "Umyj"
   try {
     const session = await getServerSession(authOptions);
 
@@ -281,13 +236,12 @@ export async function POST(req) {
       return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
     }
 
-    const { action, status } = await req.json(); // "REFUEL", "WASH", "OC", "AC", "TOGGLE_STATUS"
+    const { action, status } = await req.json();
 
-    const user = await prisma.user.findUnique({
-      where: { id: session.user.id }
-    });
-
+    const user = await dbOne("SELECT id, driverStatus FROM User WHERE id = ?", [session.user.id]);
     if (!user) return NextResponse.json({ error: "Brak użytkownika" }, { status: 404 });
+
+    const assignedTruck = await dbOne("SELECT id FROM Truck WHERE assignedDriverId = ?", [user.id]);
 
     const ONE_YEAR = new Date();
     ONE_YEAR.setFullYear(ONE_YEAR.getFullYear() + 1);
@@ -295,32 +249,36 @@ export async function POST(req) {
     if (action === "TOGGLE_STATUS") {
       const allowedStatuses = ["ACTIVE", "ON_ROUTE", "ON_LEAVE"];
       const newStatus = allowedStatuses.includes(status) ? status : "ACTIVE";
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { driverStatus: newStatus }
-      });
+      await dbRun("UPDATE User SET driverStatus = ?, updatedAt = NOW() WHERE id = ?", [newStatus, user.id]);
       return NextResponse.json({ success: true, driverStatus: newStatus });
     }
 
     if (action === "REFUEL" || action === "WASH" || action === "OC" || action === "AC") {
-      if (!user.assignedTruckId) return NextResponse.json({ error: "Brak przypisanego pojazdu." }, { status: 400 });
+      if (!assignedTruck) return NextResponse.json({ error: "Brak przypisanego pojazdu." }, { status: 400 });
       
-      let updateData = {};
-      if (action === "REFUEL") updateData = { fuelLevel: 100 }; // Z firmowej karty
-      if (action === "WASH") updateData = { cleanliness: 100 }; // Z firmowej karty
-      if (action === "OC") updateData = { insuranceOCExpiry: ONE_YEAR };
-      if (action === "AC") updateData = { insuranceACExpiry: ONE_YEAR };
+      let updateQuery = "";
+      let params = [];
+      if (action === "REFUEL") {
+          updateQuery = "UPDATE Truck SET fuelLevel = 100, updatedAt = NOW() WHERE id = ?";
+          params = [assignedTruck.id];
+      }
+      if (action === "WASH") {
+          updateQuery = "UPDATE Truck SET cleanliness = 100, updatedAt = NOW() WHERE id = ?";
+          params = [assignedTruck.id];
+      }
+      if (action === "OC") {
+          updateQuery = "UPDATE Truck SET insuranceOCExpiry = ?, updatedAt = NOW() WHERE id = ?";
+          params = [ONE_YEAR, assignedTruck.id];
+      }
+      if (action === "AC") {
+          updateQuery = "UPDATE Truck SET insuranceACExpiry = ?, updatedAt = NOW() WHERE id = ?";
+          params = [ONE_YEAR, assignedTruck.id];
+      }
 
-      await prisma.truck.update({
-        where: { id: user.assignedTruckId },
-        data: updateData
-      });
+      await dbRun(updateQuery, params);
     } else if (action === "ACK_BREAKDOWN") {
-      if (!user.assignedTruckId) return NextResponse.json({ error: "Brak przypisanego pojazdu." }, { status: 400 });
-      await prisma.truck.update({
-        where: { id: user.assignedTruckId },
-        data: { pendingBreakdown: null }
-      });
+      if (!assignedTruck) return NextResponse.json({ error: "Brak przypisanego pojazdu." }, { status: 400 });
+      await dbRun("UPDATE Truck SET pendingBreakdown = NULL, updatedAt = NOW() WHERE id = ?", [assignedTruck.id]);
     } else if (action === "MEDICAL" || action === "LICENSE") {
       return NextResponse.json({ error: "Odnawianie dokumentów odbywa się teraz poprzez zdanie egzaminu / testu psychologicznego." }, { status: 400 });
     } else {

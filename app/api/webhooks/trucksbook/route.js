@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbRun, generateId } from "../../../../lib/db";
 
 const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1028342826745991238/omJtvvECXjBINcEkR__ZVffaiWZyQnbPNFOPuAsRVr86THGs2XwQw_ZejJOGHuVD0ONy";
 
@@ -75,68 +75,76 @@ export async function POST(request) {
 
     // Jeśli udało się znaleźć jakiegoś kierowcę i sensowny dystans
     if (driverName && distance > 0) {
-        // Szukamy kierowcy po discordNick lub name
-      const user = await prisma.user.findFirst({
-        where: {
-          OR: [
-            { trucksBookName: driverName },
-            { discordNick: driverName },
-            { name: driverName },
-            { firstName: driverName }
-          ]
-        },
-        include: {
-          assignedTruck: true
-        }
-      });
+      const cleanDriverName = driverName.replace(/\[.*?\]|\(.*?\)|BMS\s*\|\s*|BMS\s*-\s*/gi, '').trim();
+      const searchNames = [...new Set([driverName, cleanDriverName].filter(Boolean))];
+
+      let user = null;
+      for (const nameToTry of searchNames) {
+        user = await dbOne(`
+          SELECT * FROM User 
+          WHERE (trucksBookName IS NOT NULL AND trucksBookName != '' AND (trucksBookName = ? OR LOWER(trucksBookName) = LOWER(?)))
+             OR (discordNick IS NOT NULL AND discordNick != '' AND (discordNick = ? OR LOWER(discordNick) = LOWER(?)))
+             OR (name IS NOT NULL AND name != '' AND (name = ? OR LOWER(name) = LOWER(?)))
+             OR (firstName IS NOT NULL AND firstName != '' AND (firstName = ? OR LOWER(firstName) = LOWER(?)))
+          LIMIT 1
+        `, [nameToTry, nameToTry, nameToTry, nameToTry, nameToTry, nameToTry, nameToTry, nameToTry]);
+        if (user) break;
+      }
 
       if (user) {
-        // Dodajemy zrealizowaną trasę do systemu
-        const newJob = await prisma.job.create({
-          data: {
-            userId: user.id,
+        const assignedTruck = await dbOne("SELECT * FROM Truck WHERE assignedDriverId = ?", [user.id]);
+
+        const jobId = generateId();
+        await dbRun(
+          `INSERT INTO Job 
+          (id, userId, startCity, endCity, cargo, distance, status, summaryScreenshot, description, truckId, trailerId, averageFuel, plannedDistance, weight, date, createdAt, updatedAt) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+          [
+            jobId,
+            user.id,
             startCity,
             endCity,
             cargo,
             distance,
-            status: "APPROVED",
-            summaryScreenshot: "TRUCKSBOOK_AUTO",
-            description: "Trasa automatycznie zaimportowana z TrucksBook.",
-            truckId: user.assignedTruck?.id || null,
-            trailerId: user.assignedTruck?.attachedTrailerId || null,
-            averageFuel: 0,
-            plannedDistance: distance,
-            weight: 0
-          }
-        });
+            "APPROVED",
+            "TRUCKSBOOK_AUTO",
+            "Trasa automatycznie zaimportowana z TrucksBook.",
+            assignedTruck?.id || null,
+            assignedTruck?.attachedTrailerId || null,
+            0,
+            distance,
+            0
+          ]
+        );
 
         // Aktualizacja kilometrów usera
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { totalDrivenKm: { increment: distance } }
-        });
+        await dbRun(
+          "UPDATE User SET totalDrivenKm = totalDrivenKm + ?, updatedAt = NOW() WHERE id = ?",
+          [distance, user.id]
+        );
 
         // Dodaj przejechane kilometry do przebiegu ciągnika, jeśli przypisany
-        if (user.assignedTruck) {
-          const oldMileage = user.assignedTruck.mileage;
+        if (assignedTruck) {
+          const oldMileage = assignedTruck.mileage;
           const newMileage = oldMileage + distance;
           
           let truckUpdateData = { mileage: newMileage };
           
           // 1. ZUŻYCIE OPON (0.10 PLN za 1 km)
           const tireCost = distance * 0.10;
-          await prisma.serviceInvoice.create({
-            data: {
-              title: `Zużycie opon (Trasa: ${startCity} - ${endCity})`,
-              description: `Dystans: ${distance} km x 0.10 PLN/km. Kierowca: ${user.name}`,
-              amount: tireCost,
-              type: "TIRES",
-              truckId: user.assignedTruck.id
-            }
-          });
+          await dbRun(
+            "INSERT INTO ServiceInvoice (id, title, description, amount, status, type, truckId, date) VALUES (?, ?, ?, ?, 'PENDING', 'TIRES', ?, NOW())",
+            [
+              generateId(),
+              `Zużycie opon (Trasa: ${startCity} - ${endCity})`,
+              `Dystans: ${distance} km x 0.10 PLN/km. Kierowca: ${user.name}`,
+              tireCost,
+              assignedTruck.id
+            ]
+          );
 
           // 2. SERWIS OKRESOWY (Co 80 000 km)
-          const lastService = user.assignedTruck.lastServiceKm || 0;
+          const lastService = assignedTruck.lastServiceKm || 0;
           if (newMileage - lastService >= 80000) {
             const nextServiceMark = Math.floor(newMileage / 80000) * 80000;
             truckUpdateData.lastServiceKm = nextServiceMark;
@@ -144,42 +152,51 @@ export async function POST(request) {
             // Losowy koszt z widełek lub zależny od przebiegu
             const serviceCost = newMileage > 200000 ? 15000 : (newMileage > 120000 ? 8000 : 3000);
             
-            await prisma.serviceInvoice.create({
-              data: {
-                title: `Serwis Okresowy (${nextServiceMark / 1000}k km)`,
-                description: `Pojazd przekroczył próg interwału serwisowego.`,
-                amount: serviceCost,
-                type: "SERVICE",
-                truckId: user.assignedTruck.id
-              }
-            });
+            await dbRun(
+              "INSERT INTO ServiceInvoice (id, title, description, amount, status, type, truckId, date) VALUES (?, ?, ?, ?, 'PENDING', 'SERVICE', ?, NOW())",
+              [
+                generateId(),
+                `Serwis Okresowy (${nextServiceMark / 1000}k km)`,
+                `Pojazd przekroczył próg interwału serwisowego.`,
+                serviceCost,
+                assignedTruck.id
+              ]
+            );
             
-            await prisma.vehicleHistory.create({
-              data: {
-                truckId: user.assignedTruck.id,
-                type: "SERVICE",
-                description: `Wykonano wymagany serwis po przekroczeniu ${nextServiceMark / 1000}k km.`,
-                cost: serviceCost,
-                userId: user.id
-              }
-            });
+            await dbRun(
+              "INSERT INTO VehicleHistory (id, truckId, type, description, cost, date, userId) VALUES (?, ?, 'SERVICE', ?, ?, NOW(), ?)",
+              [
+                generateId(),
+                assignedTruck.id,
+                `Wykonano wymagany serwis po przekroczeniu ${nextServiceMark / 1000}k km.`,
+                serviceCost,
+                user.id
+              ]
+            );
           }
 
           // 3. AWARIE LOSOWE - WYŁĄCZONE
           // Nie losujemy już żadnych awarii pojazdu w trasie.
 
-          // Aktualizacja ciężarówki ze zliczonymi usterkami i kilometrami
-          await prisma.truck.update({
-            where: { id: user.assignedTruck.id },
-            data: truckUpdateData
-          });
+          // Aktualizacja ciężarówki ze zliczonymi usterkami i kilometrami oraz lokalizacją
+          if (truckUpdateData.lastServiceKm !== undefined) {
+            await dbRun(
+              "UPDATE Truck SET mileage = ?, location = ?, lastServiceKm = ?, updatedAt = NOW() WHERE id = ?",
+              [truckUpdateData.mileage, endCity, truckUpdateData.lastServiceKm, assignedTruck.id]
+            );
+          } else {
+            await dbRun(
+              "UPDATE Truck SET mileage = ?, location = ?, updatedAt = NOW() WHERE id = ?",
+              [truckUpdateData.mileage, endCity, assignedTruck.id]
+            );
+          }
           
           // Dodaj kilometry do naczepy
-          if (user.assignedTruck.attachedTrailerId) {
-            await prisma.trailer.update({
-              where: { id: user.assignedTruck.attachedTrailerId },
-              data: { mileage: { increment: distance } }
-            });
+          if (assignedTruck.attachedTrailerId) {
+            await dbRun(
+              "UPDATE Trailer SET mileage = mileage + ?, updatedAt = NOW() WHERE id = ?",
+              [distance, assignedTruck.attachedTrailerId]
+            );
           }
         }
         

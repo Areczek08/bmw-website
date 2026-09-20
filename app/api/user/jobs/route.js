@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbAll, dbRun, generateId } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -14,34 +14,15 @@ export async function GET(req) {
     const { searchParams } = new URL(req.url);
     const limit = Math.min(parseInt(searchParams.get("limit") || "100", 10), 200);
 
-    const jobs = await prisma.job.findMany({
-      where: {
-        userId: session.user.id,
-      },
-      select: {
-        id: true,
-        userId: true,
-        startCity: true,
-        endCity: true,
-        sourceCompany: true,
-        destinationCompany: true,
-        cargo: true,
-        weight: true,
-        distance: true,
-        plannedDistance: true,
-        breakdowns: true,
-        averageFuel: true,
-        date: true,
-        status: true,
-        createdAt: true,
-        description: true,
-        dispatcherComment: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-      take: limit
-    });
+    const jobs = await dbAll(`
+      SELECT id, userId, startCity, endCity, sourceCompany, destinationCompany, 
+             cargo, weight, distance, plannedDistance, breakdowns, averageFuel, 
+             date, status, createdAt, description, dispatcherComment 
+      FROM Job 
+      WHERE userId = ? 
+      ORDER BY createdAt DESC 
+      LIMIT ?
+    `, [session.user.id, limit]);
 
     return NextResponse.json({ jobs }, {
       headers: {
@@ -72,25 +53,53 @@ export async function POST(req) {
       truckId, trailerId
     } = body;
 
-    const newJob = await prisma.job.create({
-      data: {
-        userId: session.user.id,
-        startCity,
-        endCity,
-        sourceCompany: sourceCompany || "",
-        destinationCompany: destinationCompany || "",
-        cargo,
-        weight: Number(weight) || 0,
-        distance: Number(distance) || 0,
-        plannedDistance: Number(plannedDistance) || 0,
-        breakdowns: breakdowns || "Brak",
-        averageFuel: Number(averageFuel) || 0,
-        summaryScreenshot: summaryScreenshot || "",
-        truckScreenshot: truckScreenshot || "",
-        truckId: truckId || null,
-        trailerId: trailerId || null,
-      }
-    });
+    const id = generateId();
+    await dbRun(`
+      INSERT INTO Job (
+        id, userId, startCity, endCity, sourceCompany, destinationCompany,
+        cargo, weight, distance, plannedDistance, breakdowns, averageFuel,
+        summaryScreenshot, truckScreenshot, truckId, trailerId, 
+        createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+    `, [
+      id,
+      session.user.id,
+      startCity,
+      endCity,
+      sourceCompany || "",
+      destinationCompany || "",
+      cargo,
+      Number(weight) || 0,
+      Number(distance) || 0,
+      Number(plannedDistance) || 0,
+      breakdowns || "Brak",
+      Number(averageFuel) || 0,
+      summaryScreenshot || "",
+      truckScreenshot || "",
+      truckId || null,
+      trailerId || null
+    ]);
+
+    const newJob = {
+      id,
+      userId: session.user.id,
+      startCity,
+      endCity,
+      sourceCompany: sourceCompany || "",
+      destinationCompany: destinationCompany || "",
+      cargo,
+      weight: Number(weight) || 0,
+      distance: Number(distance) || 0,
+      plannedDistance: Number(plannedDistance) || 0,
+      breakdowns: breakdowns || "Brak",
+      averageFuel: Number(averageFuel) || 0,
+      summaryScreenshot: summaryScreenshot || "",
+      truckScreenshot: truckScreenshot || "",
+      truckId: truckId || null,
+      trailerId: trailerId || null,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
 
     return NextResponse.json({ message: "Trasa dodana pomyślnie", job: newJob }, { status: 201 });
 

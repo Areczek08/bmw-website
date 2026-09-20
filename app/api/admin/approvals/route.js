@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbRun } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 import { sendApprovalEmail } from "../../../../lib/mailer";
@@ -14,48 +14,49 @@ export async function POST(req) {
     const body = await req.json();
     const { userId, action, rank, monthlyLimitKm, initialDeliveries, initialMileage, truckId, rejectionReason } = body;
 
-    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const user = await dbOne("SELECT * FROM User WHERE id = ?", [userId]);
     if (!user) {
       return NextResponse.json({ error: "Nie znaleziono użytkownika" }, { status: 404 });
     }
 
     if (action === "APPROVE") {
       // 1. Zaktualizuj użytkownika
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          driverStatus: "OFFLINE", // Aktywny, ale aktualnie nie w trasie
-          rank: rank || "Praktykant",
-          monthlyLimitKm: parseInt(monthlyLimitKm) || 10000,
-          initialDeliveries: parseInt(initialDeliveries) || 0,
-          initialMileage: parseInt(initialMileage) || 0,
-          // Jeśli masz więcej pól, np. contractType, dodaj je tu
-        }
-      });
+      await dbRun(
+        "UPDATE User SET driverStatus = 'OFFLINE', rank = ?, monthlyLimitKm = ?, initialDeliveries = ?, initialMileage = ?, updatedAt = NOW() WHERE id = ?",
+        [
+          rank || "Praktykant",
+          parseInt(monthlyLimitKm) || 10000,
+          parseInt(initialDeliveries) || 0,
+          parseInt(initialMileage) || 0,
+          userId
+        ]
+      );
 
       // 2. Jeśli przypisano ciężarówkę, zaktualizuj ciężarówkę
       if (truckId) {
         // Najpierw usuń ew. przypisanie tej ciężarówki do kogoś innego
-        await prisma.truck.updateMany({
-          where: { id: truckId },
-          data: { assignedDriverId: userId }
-        });
+        await dbRun("UPDATE Truck SET assignedDriverId = ?, updatedAt = NOW() WHERE id = ?", [userId, truckId]);
       }
 
       // 3. Wyślij email
-      await sendApprovalEmail(user.email, user.firstName || user.name || "Kierowco", true);
+      try {
+        await sendApprovalEmail(user.email, user.firstName || user.name || "Kierowco", true);
+      } catch (e) {
+        console.error('Email error:', e);
+      }
 
       return NextResponse.json({ success: true, message: "Konto zaakceptowane." });
 
     } else if (action === "REJECT") {
       // Przy odrzuceniu zmieniamy status na INACTIVE lub usuwamy konto (tutaj zmieniamy na INACTIVE żeby mieć historię)
-      await prisma.user.update({
-        where: { id: userId },
-        data: { driverStatus: "INACTIVE" }
-      });
+      await dbRun("UPDATE User SET driverStatus = 'INACTIVE', updatedAt = NOW() WHERE id = ?", [userId]);
 
       // Wyślij email z odrzuceniem
-      await sendApprovalEmail(user.email, user.firstName || user.name || "Kandydacie", false, rejectionReason);
+      try {
+        await sendApprovalEmail(user.email, user.firstName || user.name || "Kandydacie", false, rejectionReason);
+      } catch (e) {
+        console.error('Email error:', e);
+      }
 
       return NextResponse.json({ success: true, message: "Konto odrzucone." });
     }

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { db } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -18,15 +18,18 @@ export async function POST(req) {
       return NextResponse.json({ error: "Nieprawidłowe dane" }, { status: 400 });
     }
 
-    // Aktualizujemy wszystkich kierowców za pomocą transakcji
-    const transactions = orderedIds.map((id, index) => {
-      return prisma.user.update({
-        where: { id },
-        data: { displayOrder: index + 1 }
-      });
+    await db(async (conn) => {
+      await conn.query("START TRANSACTION");
+      try {
+        for (let i = 0; i < orderedIds.length; i++) {
+          await conn.query("UPDATE User SET displayOrder = ?, updatedAt = NOW() WHERE id = ?", [i + 1, orderedIds[i]]);
+        }
+        await conn.query("COMMIT");
+      } catch (err) {
+        await conn.query("ROLLBACK");
+        throw err;
+      }
     });
-
-    await prisma.$transaction(transactions);
 
     return NextResponse.json({ success: true });
   } catch (error) {

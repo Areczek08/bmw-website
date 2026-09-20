@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -11,10 +11,7 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
-      select: { accountBalance: true }
-    });
+    const user = await dbOne("SELECT accountBalance FROM User WHERE id = ?", [session.user.id]);
 
     if (!user) {
       return NextResponse.json({ error: "Nie znaleziono profilu." }, { status: 404 });

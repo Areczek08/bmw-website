@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../../lib/prisma";
+import { dbOne, dbRun, generateId } from "../../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../auth/[...nextauth]/route";
 
@@ -12,10 +12,9 @@ export async function POST(req, { params }) {
     }
 
     const { id } = await params;
-    const body = await req.json();
-    const { action, comment } = body; // "APPROVE" lub "REJECT"
+    const { action, comment } = await req.json();
 
-    const request = await prisma.request.findUnique({ where: { id } });
+    const request = await dbOne("SELECT * FROM Request WHERE id = ?", [id]);
     if (!request) return NextResponse.json({ error: "Wniosek nie istnieje" }, { status: 404 });
 
     let newContent = request.content;
@@ -24,36 +23,27 @@ export async function POST(req, { params }) {
     }
 
     if (action === "APPROVE") {
-      await prisma.request.update({
-        where: { id },
-        data: { status: "APPROVED", content: newContent }
-      });
+      await dbRun("UPDATE Request SET status = 'APPROVED', content = ?, updatedAt = NOW() WHERE id = ?", [newContent, id]);
 
-      // Zastosuj efekty zależnie od typu
       if (request.type === "SERVICE" && request.truckId) {
-        await prisma.$transaction([
-          prisma.truck.update({
-            where: { id: request.truckId },
-            data: { condition: 100 }
-          }),
-          prisma.vehicleHistory.create({
-            data: {
-              truckId: request.truckId,
-              userId: request.userId,
-              type: "SERVICE",
-              description: `Zatwierdzono Wniosek Serwisowy: ${request.content}`,
-              cost: request.cost || 0,
-            }
-          })
+        await dbRun("UPDATE Truck SET condition = 100, updatedAt = NOW() WHERE id = ?", [request.truckId]);
+        
+        const historyId = generateId();
+        await dbRun(`
+          INSERT INTO VehicleHistory (id, truckId, userId, type, description, cost, createdAt)
+          VALUES (?, ?, ?, 'SERVICE', ?, ?, NOW())
+        `, [
+          historyId,
+          request.truckId,
+          request.userId,
+          `Zatwierdzono Wniosek Serwisowy: ${request.content}`,
+          request.cost || 0
         ]);
       }
       return NextResponse.json({ success: true, message: "Zatwierdzono" });
 
     } else if (action === "REJECT") {
-      await prisma.request.update({
-        where: { id },
-        data: { status: "REJECTED", content: newContent }
-      });
+      await dbRun("UPDATE Request SET status = 'REJECTED', content = ?, updatedAt = NOW() WHERE id = ?", [newContent, id]);
       return NextResponse.json({ success: true, message: "Odrzucono" });
     }
 

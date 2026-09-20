@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbRun, generateId } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -18,15 +18,20 @@ export async function POST(req) {
       return NextResponse.json({ error: "Brakuje wymaganych pól wniosku." }, { status: 400 });
     }
 
-    const newRequest = await prisma.request.create({
-      data: {
-        userId: session.user.id,
-        type,
-        title,
-        content,
-        status: "PENDING",
-      }
-    });
+    const id = generateId();
+    await dbRun(`
+      INSERT INTO Request (id, userId, type, title, content, status, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, 'PENDING', NOW(), NOW())
+    `, [id, session.user.id, type, title, content]);
+
+    const newRequest = {
+      id,
+      userId: session.user.id,
+      type,
+      title,
+      content,
+      status: 'PENDING'
+    };
 
     return NextResponse.json({ success: true, request: newRequest });
   } catch (error) {

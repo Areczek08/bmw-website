@@ -1,7 +1,7 @@
 "use client";
 
 import { signIn } from "next-auth/react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { KeyRound, Mail, ArrowRight, ShieldCheck } from "lucide-react";
 import Link from "next/link";
@@ -13,6 +13,16 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [isRegistered, setIsRegistered] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("registered") === "true") {
+        setIsRegistered(true);
+      }
+    }
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -31,7 +41,9 @@ export default function LoginPage() {
         setError("Nieprawidłowy adres e-mail lub hasło.");
         setLoading(false);
       } else if (res?.ok) {
-        window.location.href = "/dashboard";
+        const params = new URLSearchParams(window.location.search);
+        const callbackUrl = params.get("callbackUrl") || "/dashboard";
+        window.location.href = callbackUrl;
       } else {
         setError("Nieprawidłowy adres e-mail lub hasło.");
         setLoading(false);
@@ -68,6 +80,17 @@ export default function LoginPage() {
               Zaloguj się do panelu Bojar Manager System
             </p>
           </div>
+
+          {isRegistered && (
+            <motion.div 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-6 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs md:text-sm text-center font-medium shadow-sm flex items-center justify-center gap-2.5"
+            >
+              <ShieldCheck className="w-5 h-5 shrink-0 text-emerald-400" />
+              <span>Konto zostało zarejestrowane! Zaloguj się poniżej. Pamiętaj, że pełny dostęp do systemu odblokuje się po potwierdzeniu przez Zarząd.</span>
+            </motion.div>
+          )}
 
           {error && (
             <motion.div 

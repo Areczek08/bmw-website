@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { db, dbOne, generateId } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -13,13 +13,12 @@ export async function POST(req) {
 
     const { type, passed, score } = await req.json();
 
-    const user = await prisma.user.findUnique({
-      where: { id: session.user.id }
-    });
+    const user = await dbOne("SELECT * FROM User WHERE id = ?", [session.user.id]);
 
     if (!user) return NextResponse.json({ error: "Brak użytkownika" }, { status: 404 });
 
-    let updateData = {};
+    let updateQuery = "UPDATE User SET accountBalance = accountBalance - ?, updatedAt = NOW()";
+    const updateParams = [];
     let cost = 0;
     let title = "";
 
@@ -37,33 +36,41 @@ export async function POST(req) {
       return NextResponse.json({ error: "Masz niewystarczające środki na koncie, aby opłacić tę próbę!" }, { status: 400 });
     }
 
-    updateData.accountBalance = { decrement: cost };
+    updateParams.push(cost);
 
     if (passed) {
       if (type === "license") {
         const THREE_MONTHS = new Date();
         THREE_MONTHS.setMonth(THREE_MONTHS.getMonth() + 3);
-        updateData.drivingLicenseExpiry = THREE_MONTHS;
+        updateQuery += ", drivingLicenseExpiry = ?";
+        updateParams.push(THREE_MONTHS);
       } else if (type === "medical") {
         const ONE_YEAR = new Date();
         ONE_YEAR.setFullYear(ONE_YEAR.getFullYear() + 1);
-        updateData.medicalExamExpiry = ONE_YEAR;
+        updateQuery += ", medicalExamExpiry = ?";
+        updateParams.push(ONE_YEAR);
       }
     }
 
-    await prisma.$transaction([
-      prisma.user.update({
-        where: { id: user.id },
-        data: updateData
-      }),
-      prisma.bankTransaction.create({
-        data: {
-          userId: user.id,
-          amount: -cost,
-          title: title
-        }
-      })
-    ]);
+    updateQuery += " WHERE id = ?";
+    updateParams.push(user.id);
+
+    await db(async (conn) => {
+      await conn.query("START TRANSACTION");
+      try {
+        await conn.query(updateQuery, updateParams);
+        
+        const txId = generateId();
+        await conn.query("INSERT INTO BankTransaction (id, userId, amount, title, date) VALUES (?, ?, ?, ?, NOW())", [
+          txId, user.id, -cost, title
+        ]);
+
+        await conn.query("COMMIT");
+      } catch (err) {
+        await conn.query("ROLLBACK");
+        throw err;
+      }
+    });
 
     if (!passed) {
       return NextResponse.json({ success: true, message: "Nie zdałeś egzaminu. Opłata za próbę została pobrana z konta." });

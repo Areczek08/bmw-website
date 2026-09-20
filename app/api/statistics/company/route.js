@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbAll } from "../../../../lib/db";
 
 export async function GET(req) {
   try {
@@ -7,50 +7,40 @@ export async function GET(req) {
     const period = searchParams.get("period") || "all";
     const dateParam = searchParams.get("date");
 
-    let dateFilter = {};
-    let settlementFilter = {};
+    let conditions = ["status = 'APPROVED'"];
+    let params = [];
+    
+    let setConditions = [];
+    let setParams = [];
 
     if (period === "month" && dateParam) {
       const [year, month] = dateParam.split("-").map(Number);
       const startDate = new Date(year, month - 1, 1);
       const endDate = new Date(year, month, 1);
-      dateFilter = {
-        date: {
-          gte: startDate,
-          lt: endDate,
-        },
-      };
-      settlementFilter = {
-        month,
-        year,
-      };
+      
+      conditions.push("date >= ?");
+      conditions.push("date < ?");
+      params.push(startDate, endDate);
+      
+      setConditions.push("month = ?");
+      setConditions.push("year = ?");
+      setParams.push(month, year);
     } else if (period === "year" && dateParam) {
       const year = parseInt(dateParam.split("-")[0]);
       const startDate = new Date(year, 0, 1);
       const endDate = new Date(year + 1, 0, 1);
-      dateFilter = {
-        date: {
-          gte: startDate,
-          lt: endDate,
-        },
-      };
-      settlementFilter = {
-        year,
-      };
+      
+      conditions.push("date >= ?");
+      conditions.push("date < ?");
+      params.push(startDate, endDate);
+      
+      setConditions.push("year = ?");
+      setParams.push(year);
     }
 
-    const jobs = await prisma.job.findMany({
-      where: {
-        status: "APPROVED",
-        ...dateFilter,
-      },
-      select: {
-        userId: true,
-        distance: true,
-        averageFuel: true,
-        weight: true,
-      },
-    });
+    const whereClause = conditions.join(" AND ");
+    const sql = `SELECT userId, distance, averageFuel, weight FROM Job WHERE ${whereClause}`;
+    const jobs = await dbAll(sql, params);
 
     let totalDistance = 0;
     let totalFuel = 0;
@@ -71,12 +61,11 @@ export async function GET(req) {
       ? (totalFuel / totalDistance) * 100 
       : 0;
 
-    const settlements = await prisma.monthlySettlement.findMany({
-      where: settlementFilter,
-      select: {
-        netProfit: true,
-      },
-    });
+    let settlementsSql = "SELECT netProfit FROM MonthlySettlement";
+    if (setConditions.length > 0) {
+      settlementsSql += " WHERE " + setConditions.join(" AND ");
+    }
+    const settlements = await dbAll(settlementsSql, setParams);
 
     const totalRevenue = settlements.reduce((sum, s) => sum + s.netProfit, 0);
 

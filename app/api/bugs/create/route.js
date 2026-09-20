@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbRun, generateId } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -12,17 +12,15 @@ export async function POST(req) {
       return NextResponse.json({ error: "Brakuje danych." }, { status: 400 });
     }
 
-    const bug = await prisma.bugReport.create({
-      data: {
-        title,
-        description,
-        imageUrl,
-        userId: session?.user?.id || null, // Zalogowany lub anonimowo
-        status: "NEW"
-      }
-    });
+    const id = generateId();
+    const userId = session?.user?.id || null; // Zalogowany lub anonimowo
 
-    return NextResponse.json({ success: true, bug });
+    await dbRun(`
+      INSERT INTO BugReport (id, title, description, imageUrl, userId, status, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, 'NEW', NOW(), NOW())
+    `, [id, title, description, imageUrl || null, userId]);
+
+    return NextResponse.json({ success: true, bug: { id, title, description, imageUrl, userId, status: 'NEW' } });
   } catch (error) {
     console.error("Błąd zapisu zgłoszenia:", error);
     return NextResponse.json({ error: "Błąd serwera." }, { status: 500 });

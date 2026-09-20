@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../lib/prisma";
+import { dbOne, dbRun, generateId } from "../../../lib/db";
 import bcrypt from "bcryptjs";
 import { sendRegistrationEmail } from "../../../lib/mailer";
 
@@ -26,32 +26,31 @@ export async function POST(req) {
       return NextResponse.json({ message: "Błąd serwera podczas weryfikacji CAPTCHA." }, { status: 500 });
     }
 
-    const existingUser = await prisma.user.findUnique({
-      where: { email },
-    });
+    const existingUser = await dbOne("SELECT id FROM User WHERE email = ?", [email]);
 
     if (existingUser) {
       return NextResponse.json({ message: "Użytkownik z tym emailem już istnieje." }, { status: 400 });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const id = generateId();
 
-    const user = await prisma.user.create({
-      data: {
-        name,
-        firstName,
-        discordNick,
-        email,
-        password: hashedPassword,
-        // Pierwszy użytkownik mógłby mieć rolę ADMIN, domyślnie jest DRIVER.
-      },
-    });
+    await dbRun(
+      `INSERT INTO User (id, name, firstName, discordNick, email, password, createdAt, updatedAt) 
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [id, name, firstName, discordNick, email, hashedPassword]
+    );
 
-    // Send registration email asynchronously (no need to await to block response, but we can do it if we want to ensure it works)
-    await sendRegistrationEmail(email, name);
+    // Send registration email
+    try {
+      await sendRegistrationEmail(email, name);
+    } catch (e) {
+      console.error('Email error:', e);
+    }
 
     return NextResponse.json({ message: "Zarejestrowano pomyślnie." }, { status: 201 });
   } catch (error) {
+    console.error(error);
     return NextResponse.json({ message: "Wystąpił błąd podczas rejestracji." }, { status: 500 });
   }
 }

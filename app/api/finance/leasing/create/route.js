@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../../auth/[...nextauth]/route";
-import { prisma } from "../../../../../lib/prisma";
+import { dbOne, dbRun, generateId } from "../../../../../lib/db";
 
 export async function POST(req) {
   try {
@@ -17,22 +17,17 @@ export async function POST(req) {
       return NextResponse.json({ error: "Brakuje wymaganych danych" }, { status: 400 });
     }
 
-    const existing = await prisma.leasing.findUnique({ where: { truckId } });
+    const existing = await dbOne("SELECT * FROM Leasing WHERE truckId = ?", [truckId]);
     if (existing) {
       return NextResponse.json({ error: "Ta ciężarówka posiada już przypisany leasing" }, { status: 400 });
     }
 
-    const newLeasing = await prisma.leasing.create({
-      data: {
-        truckId,
-        totalValue,
-        monthlyRate,
-        buyoutPrice,
-        totalCost,
-        installmentsTotal,
-        startDate: new Date(startDate)
-      }
-    });
+    const id = generateId();
+    await dbRun(
+      "INSERT INTO Leasing (id, truckId, totalValue, monthlyRate, buyoutPrice, totalCost, installmentsTotal, startDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, truckId, totalValue, monthlyRate, buyoutPrice || null, totalCost || null, installmentsTotal, new Date(startDate)]
+    );
+    const newLeasing = await dbOne("SELECT * FROM Leasing WHERE id = ?", [id]);
 
     return NextResponse.json({ success: true, leasing: newLeasing });
   } catch (error) {

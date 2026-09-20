@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../../lib/prisma";
+import { db, dbOne } from "../../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../auth/[...nextauth]/route";
 
@@ -7,16 +7,13 @@ export async function PUT(req, { params }) {
   try {
     const session = await getServerSession(authOptions);
 
-    // Dyspozytorzy, Zarząd, Właściciele
     if (!session || !session.user || (session.user.role !== "DISPATCHER" && session.user.role !== "BOARD" && session.user.role !== "OWNER")) {
       return NextResponse.json({ error: "Brak uprawnień do zatwierdzania tras" }, { status: 403 });
     }
 
-    const { id } = params;
+    const { id } = await params;
 
-    const job = await prisma.job.findUnique({
-      where: { id }
-    });
+    const job = await dbOne("SELECT * FROM Job WHERE id = ?", [id]);
 
     if (!job) {
       return NextResponse.json({ error: "Nie znaleziono trasy" }, { status: 404 });
@@ -26,43 +23,33 @@ export async function PUT(req, { params }) {
       return NextResponse.json({ error: "Trasa została już zaakceptowana" }, { status: 400 });
     }
 
-    // Aktualizacja statusu trasy
-    const updatedJob = await prisma.job.update({
-      where: { id },
-      data: { status: "APPROVED" }
+    const distance = Number(job.distance) || 0;
+
+    await db(async (conn) => {
+      await conn.query("START TRANSACTION");
+      try {
+        await conn.query("UPDATE Job SET status = 'APPROVED', updatedAt = NOW() WHERE id = ?", [id]);
+
+        if (job.userId && distance > 0) {
+          await conn.query("UPDATE User SET totalDrivenKm = totalDrivenKm + ?, updatedAt = NOW() WHERE id = ?", [distance, job.userId]);
+        }
+
+        if (job.truckId && distance > 0) {
+          await conn.query("UPDATE Truck SET mileage = mileage + ?, updatedAt = NOW() WHERE id = ?", [distance, job.truckId]);
+        }
+
+        if (job.trailerId && distance > 0) {
+          await conn.query("UPDATE Trailer SET mileage = mileage + ?, updatedAt = NOW() WHERE id = ?", [distance, job.trailerId]);
+        }
+
+        await conn.query("COMMIT");
+      } catch (err) {
+        await conn.query("ROLLBACK");
+        throw err;
+      }
     });
 
-    const distance = job.distance;
-
-    // 1. Doliczanie kilometrów do kierowcy
-    if (job.userId && distance > 0) {
-      await prisma.user.update({
-        where: { id: job.userId },
-        data: {
-          totalDrivenKm: { increment: distance }
-        }
-      });
-    }
-
-    // 2. Doliczanie kilometrów do ciężarówki
-    if (job.truckId && distance > 0) {
-      await prisma.truck.update({
-        where: { id: job.truckId },
-        data: {
-          mileage: { increment: distance }
-        }
-      });
-    }
-
-    // 3. Doliczanie kilometrów do naczepy
-    if (job.trailerId && distance > 0) {
-      await prisma.trailer.update({
-        where: { id: job.trailerId },
-        data: {
-          mileage: { increment: distance }
-        }
-      });
-    }
+    const updatedJob = await dbOne("SELECT * FROM Job WHERE id = ?", [id]);
 
     return NextResponse.json({ message: "Trasa zatwierdzona. Kilometry zostały dodane.", job: updatedJob }, { status: 200 });
 

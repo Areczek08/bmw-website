@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbRun, generateId } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -16,22 +16,16 @@ export async function POST(req) {
 
     const companyId = session.user.companyId || "BMS";
 
-    // Znajdź trasy w danym miesiącu dla danej firmy
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59);
 
-    const monthlyJobs = await prisma.job.aggregate({
-      where: {
-        status: "APPROVED",
-        date: { gte: startDate, lte: endDate },
-        user: { companyId: companyId }
-      },
-      _sum: { distance: true }
-    });
+    const agg = await dbOne(
+      "SELECT COALESCE(SUM(distance), 0) as totalDistance FROM Job WHERE status = ? AND date >= ? AND date <= ? AND userId IN (SELECT id FROM User WHERE companyId = ?)",
+      ["APPROVED", startDate, endDate, companyId]
+    );
 
-    const totalDistance = monthlyJobs._sum.distance || 0;
+    const totalDistance = Number(agg.totalDistance) || 0;
 
-    // Pobierz kurs
     let eurRate = 4.3;
     try {
       const res = await fetch("http://api.nbp.pl/api/exchangerates/rates/a/eur/?format=json");
@@ -41,66 +35,64 @@ export async function POST(req) {
       console.warn("NBP API fetch failed");
     }
 
-    let company = await prisma.company.findUnique({ where: { id: companyId } });
+    let company = await dbOne("SELECT * FROM Company WHERE id = ?", [companyId]);
     if (!company) {
-      company = await prisma.company.create({ data: { id: companyId } });
+      await dbRun("INSERT INTO Company (id, createdAt, updatedAt) VALUES (?, NOW(), NOW())", [companyId]);
+      company = await dbOne("SELECT * FROM Company WHERE id = ?", [companyId]);
     }
 
     const ratePerKm = company.revenuePerKmEur || (companyId === "BMS" ? 1.60 : 1.20);
     const revenuePLN = totalDistance * ratePerKm * eurRate;
     const netProfit = revenuePLN - (fuelCost + ticketsCost + maintenanceCost + otherCost);
 
-    // Aktualizuj budżet firmy
-    company = await prisma.company.update({
-      where: { id: companyId },
-      data: { balance: { increment: netProfit } }
-    });
+    await dbRun("UPDATE Company SET balance = balance + ?, updatedAt = NOW() WHERE id = ?", [netProfit, companyId]);
 
-    // Prowizja dla Bojara (BMS) jeśli to jest firma podwykonawcza
+    // Refresh company to get latest balance
+    company = await dbOne("SELECT * FROM Company WHERE id = ?", [companyId]);
+
     if (companyId !== "BMS" && !company.isMain) {
        const commissionRate = 0.40;
        const commissionPLN = totalDistance * commissionRate * eurRate;
-       await prisma.company.update({
-         where: { id: "BMS" },
-         data: { balance: { increment: commissionPLN } }
-       });
-       await prisma.companyTransaction.create({ 
-         data: { 
-           companyId: "BMS", 
-           type: "INCOME", 
-           amount: commissionPLN, 
-           category: "Prowizja Podwykonawca", 
-           description: `Prowizja od firmy ${company.name} za ${totalDistance} km.` 
-         } 
-       });
+       
+       let bmsCompany = await dbOne("SELECT * FROM Company WHERE id = 'BMS'");
+       if (!bmsCompany) {
+         await dbRun("INSERT INTO Company (id, createdAt, updatedAt) VALUES ('BMS', NOW(), NOW())");
+       }
+       
+       await dbRun("UPDATE Company SET balance = balance + ?, updatedAt = NOW() WHERE id = 'BMS'", [commissionPLN]);
+       
+       const txId = generateId();
+       await dbRun(
+         "INSERT INTO CompanyTransaction (id, companyId, type, amount, category, description, date) VALUES (?, 'BMS', 'INCOME', ?, 'Prowizja Podwykonawca', ?, NOW())",
+         [txId, commissionPLN, `Prowizja od firmy ${company.name || 'nieznanej'} za ${totalDistance} km.`]
+       );
     }
 
-    // Utwórz wpis rozliczenia
-    const settlement = await prisma.monthlySettlement.create({
-      data: {
-        companyId: companyId,
-        month: month,
-        year: year,
-        revenuePLN: revenuePLN,
-        fuelCost: fuelCost,
-        ticketsCost: ticketsCost,
-        maintenanceCost: maintenanceCost,
-        salariesCost: 0,
-        otherCost: otherCost,
-        netProfit: netProfit,
-        isClosed: true
-      }
-    });
+    const settlementId = generateId();
+    await dbRun(
+      "INSERT INTO MonthlySettlement (id, companyId, month, year, revenuePLN, fuelCost, ticketsCost, maintenanceCost, salariesCost, otherCost, netProfit, isClosed, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, true, NOW())",
+      [settlementId, companyId, month, year, revenuePLN, fuelCost, ticketsCost, maintenanceCost, otherCost, netProfit]
+    );
 
-    // Zapisz koszty w CompanyTransaction dla historii danej firmy
-    await prisma.companyTransaction.create({ data: { companyId, type: "INCOME", amount: revenuePLN, category: "Trasy", description: `Zysk z tras (${totalDistance} km)` } });
-    if (fuelCost > 0) await prisma.companyTransaction.create({ data: { companyId, type: "EXPENSE", amount: fuelCost, category: "Paliwo" } });
-    if (ticketsCost > 0) await prisma.companyTransaction.create({ data: { companyId, type: "EXPENSE", amount: ticketsCost, category: "Mandaty" } });
-    if (maintenanceCost > 0) await prisma.companyTransaction.create({ data: { companyId, type: "EXPENSE", amount: maintenanceCost, category: "Eksploatacja" } });
-    if (otherCost > 0) await prisma.companyTransaction.create({ data: { companyId, type: "EXPENSE", amount: otherCost, category: "Inne" } });
+    const settlement = await dbOne("SELECT * FROM MonthlySettlement WHERE id = ?", [settlementId]);
+
+    const txId1 = generateId();
+    await dbRun("INSERT INTO CompanyTransaction (id, companyId, type, amount, category, description, date) VALUES (?, ?, 'INCOME', ?, 'Trasy', ?, NOW())", [txId1, companyId, revenuePLN, `Zysk z tras (${totalDistance} km)`]);
+    
+    if (fuelCost > 0) {
+      await dbRun("INSERT INTO CompanyTransaction (id, companyId, type, amount, category, date) VALUES (?, ?, 'EXPENSE', ?, 'Paliwo', NOW())", [generateId(), companyId, fuelCost]);
+    }
+    if (ticketsCost > 0) {
+      await dbRun("INSERT INTO CompanyTransaction (id, companyId, type, amount, category, date) VALUES (?, ?, 'EXPENSE', ?, 'Mandaty', NOW())", [generateId(), companyId, ticketsCost]);
+    }
+    if (maintenanceCost > 0) {
+      await dbRun("INSERT INTO CompanyTransaction (id, companyId, type, amount, category, date) VALUES (?, ?, 'EXPENSE', ?, 'Eksploatacja', NOW())", [generateId(), companyId, maintenanceCost]);
+    }
+    if (otherCost > 0) {
+      await dbRun("INSERT INTO CompanyTransaction (id, companyId, type, amount, category, date) VALUES (?, ?, 'EXPENSE', ?, 'Inne', NOW())", [generateId(), companyId, otherCost]);
+    }
 
     return NextResponse.json({ success: true, settlement, companyBalance: company.balance });
-
   } catch (error) {
     console.error("Błąd podczas rozliczenia miesiąca:", error);
     return NextResponse.json({ error: "Wystąpił błąd podczas rozliczenia." }, { status: 500 });

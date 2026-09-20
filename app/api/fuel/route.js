@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../auth/[...nextauth]/route";
-import { prisma } from "../../../lib/prisma";
+import { dbOne, dbAll, generateId, db } from "../../../lib/db";
 
 // Pamięć podręczna cen paliw (cache)
 let fuelPriceCache = null;
@@ -70,7 +70,6 @@ async function getLiveFuelPrices() {
     
     for (const [countryCode, countryInfo] of Object.entries(pricesData.data)) {
       const currency = countryInfo.currency || "EUR";
-      // Dla ciężarówek używamy ceny oleju napędowego (diesel)
       const rawPrice = countryInfo.prices.diesel || countryInfo.prices.diesel_regular || countryInfo.prices.gasoline || 0;
       
       let priceInPln = 0;
@@ -80,7 +79,6 @@ async function getLiveFuelPrices() {
         } else if (currency === "EUR") {
           priceInPln = rawPrice * plnRate;
         } else {
-          // Zamiana waluty lokalnej na EUR, a potem na PLN
           const localRate = ratesData.rates[currency];
           if (localRate) {
             priceInPln = (rawPrice / localRate) * plnRate;
@@ -123,15 +121,7 @@ export async function GET(request) {
       const cleanCountry = country.trim();
       const cleanCity = city ? city.trim() : "";
 
-      // 1. Spróbuj pobrać średnią z bazy danych dla danego miasta
-      const cityLogs = await prisma.fuelLog.findMany({
-        where: {
-          country: cleanCountry,
-          city: cleanCity
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 5
-      });
+      const cityLogs = await dbAll("SELECT pricePerLiter FROM FuelLog WHERE country = ? AND city = ? ORDER BY createdAt DESC LIMIT 5", [cleanCountry, cleanCity]);
 
       if (cityLogs.length > 0) {
         const sum = cityLogs.reduce((acc, log) => acc + log.pricePerLiter, 0);
@@ -139,14 +129,7 @@ export async function GET(request) {
         return NextResponse.json({ price: avg.toFixed(2), source: "db_city" });
       }
 
-      // 2. Spróbuj pobrać średnią z bazy danych dla danego kraju ogółem
-      const countryLogs = await prisma.fuelLog.findMany({
-        where: {
-          country: cleanCountry
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 10
-      });
+      const countryLogs = await dbAll("SELECT pricePerLiter FROM FuelLog WHERE country = ? ORDER BY createdAt DESC LIMIT 10", [cleanCountry]);
 
       if (countryLogs.length > 0) {
         const sum = countryLogs.reduce((acc, log) => acc + log.pricePerLiter, 0);
@@ -154,21 +137,19 @@ export async function GET(request) {
         return NextResponse.json({ price: avg.toFixed(2), source: "db_country" });
       }
 
-      // 3. Pobierz aktualne stawki z Internetu (live API) i przelicz na PLN
       const countryCode = getCountryCode(cleanCountry);
       if (countryCode) {
         const livePrices = await getLiveFuelPrices();
         if (livePrices && livePrices[countryCode]) {
           let price = livePrices[countryCode];
           
-          // Drobna fluktuacja dobowa dla realizmu
           const todayStr = new Date().toISOString().slice(0, 10);
           const seedStr = todayStr + cleanCity.toLowerCase();
           let hash = 0;
           for (let i = 0; i < seedStr.length; i++) {
             hash = seedStr.charCodeAt(i) + ((hash << 5) - hash);
           }
-          const fluctuation = ((Math.abs(hash) % 30) - 15) / 100; // -0.15 PLN do +0.15 PLN
+          const fluctuation = ((Math.abs(hash) % 30) - 15) / 100;
           price += fluctuation;
           
           return NextResponse.json({ price: price.toFixed(2), source: "live_api" });
@@ -181,20 +162,43 @@ export async function GET(request) {
     const userId = searchParams.get('userId');
     const truckId = searchParams.get('truckId');
 
-    const whereClause = {};
-    if (userId) whereClause.userId = userId;
-    if (truckId) whereClause.truckId = truckId;
+    let query = "SELECT * FROM FuelLog";
+    let params = [];
+    if (userId && truckId) {
+      query += " WHERE userId = ? AND truckId = ?";
+      params.push(userId, truckId);
+    } else if (userId) {
+      query += " WHERE userId = ?";
+      params.push(userId);
+    } else if (truckId) {
+      query += " WHERE truckId = ?";
+      params.push(truckId);
+    }
+    query += " ORDER BY createdAt DESC";
 
-    const logs = await prisma.fuelLog.findMany({
-      where: whereClause,
-      include: {
-        user: { select: { name: true, firstName: true, email: true } },
-        truck: { select: { brand: true, model: true, plate: true, fleetNumber: true } }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
+    const logs = await dbAll(query, params);
+    
+    // Fetch users and trucks for relations
+    let users = [];
+    let trucks = [];
+    if (logs.length > 0) {
+      const userIds = [...new Set(logs.map(l => l.userId).filter(Boolean))];
+      const truckIds = [...new Set(logs.map(l => l.truckId).filter(Boolean))];
+      if (userIds.length > 0) {
+        users = await dbAll(`SELECT id, name, firstName, email FROM User WHERE id IN (${userIds.map(() => '?').join(',')})`, userIds);
+      }
+      if (truckIds.length > 0) {
+        trucks = await dbAll(`SELECT id, brand, model, plate, fleetNumber FROM Truck WHERE id IN (${truckIds.map(() => '?').join(',')})`, truckIds);
+      }
+    }
 
-    return NextResponse.json(logs);
+    const result = logs.map(log => ({
+      ...log,
+      user: users.find(u => u.id === log.userId) || { name: "Kierowca", firstName: "Kierowca", email: "" },
+      truck: trucks.find(t => t.id === log.truckId) || { plate: "-", brand: "", model: "" }
+    }));
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Error fetching fuel logs:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -217,63 +221,47 @@ export async function POST(request) {
 
     const totalCost = parseFloat(liters) * parseFloat(pricePerLiter);
 
-    // Get current truck to check mileage
-    const truck = await prisma.truck.findUnique({ where: { id: truckId } });
+    const truck = await dbOne("SELECT id, mileage, plate FROM Truck WHERE id = ?", [truckId]);
     if (!truck) {
       return NextResponse.json({ error: "Truck not found" }, { status: 404 });
     }
 
     const newMileage = parseInt(mileage);
-    const updateTruckData = {};
-    if (newMileage > truck.mileage) {
-      updateTruckData.mileage = newMileage;
-    }
 
-    // Start transaction to ensure all or nothing
-    const result = await prisma.$transaction(async (tx) => {
-      // 1. Create FuelLog
-      const log = await tx.fuelLog.create({
-        data: {
-          userId: session.user.id,
-          truckId,
-          country,
-          city,
-          liters: parseFloat(liters),
-          pricePerLiter: parseFloat(pricePerLiter),
-          totalCost,
-          mileage: newMileage,
-          cardType: cardType
+    const result = await db(async (conn) => {
+      await conn.query("START TRANSACTION");
+      try {
+        const logId = generateId();
+        await conn.query(
+          "INSERT INTO FuelLog (id, userId, truckId, country, city, liters, pricePerLiter, totalCost, mileage, cardType, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())",
+          [logId, session.user.id, truckId, country, city, parseFloat(liters), parseFloat(pricePerLiter), totalCost, newMileage, cardType]
+        );
+
+        if (newMileage > truck.mileage) {
+          await conn.query("UPDATE Truck SET mileage = ?, location = ?, updatedAt = NOW() WHERE id = ?", [newMileage, city, truckId]);
+        } else {
+          await conn.query("UPDATE Truck SET location = ?, updatedAt = NOW() WHERE id = ?", [city, truckId]);
         }
-      });
 
-      // 2. Update Truck mileage if higher
-      if (Object.keys(updateTruckData).length > 0) {
-        await tx.truck.update({
-          where: { id: truckId },
-          data: updateTruckData
-        });
-      }
-
-      // 3. Deduct company balance
-      const company = await tx.company.findUnique({ where: { id: "BMS" } });
-      if (company) {
-        await tx.company.update({
-          where: { id: "BMS" },
-          data: { balance: company.balance - totalCost }
-        });
-      }
-
-      // 4. Create Company Transaction log
-      await tx.companyTransaction.create({
-        data: {
-          type: "EXPENSE",
-          amount: totalCost,
-          category: "Paliwo",
-          description: `Tankowanie: ${truck.plate} | Kierowca: ${session.user.name} | ${liters}L x ${pricePerLiter} (${country}, ${city})`
+        const companyRows = await conn.query("SELECT id, balance FROM Company WHERE id = ?", ["BMS"]);
+        if (companyRows && companyRows.length > 0) {
+          await conn.query("UPDATE Company SET balance = balance - ?, updatedAt = NOW() WHERE id = ?", [totalCost, "BMS"]);
         }
-      });
 
-      return log;
+        const transId = generateId();
+        const driverName = session.user.name || session.user.firstName || "Kierowca";
+        await conn.query(
+          "INSERT INTO CompanyTransaction (id, companyId, type, amount, category, description, date) VALUES (?, ?, 'EXPENSE', ?, 'Paliwo', ?, NOW())",
+          [transId, "BMS", totalCost, `Tankowanie: ${truck.plate} | Kierowca: ${driverName} | ${liters}L x ${pricePerLiter} (${country}, ${city})`]
+        );
+
+        await conn.query("COMMIT");
+        const logs = await conn.query("SELECT * FROM FuelLog WHERE id = ?", [logId]);
+        return logs[0];
+      } catch (txErr) {
+        await conn.query("ROLLBACK");
+        throw txErr;
+      }
     });
 
     return NextResponse.json(result, { status: 201 });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/route";
-import { prisma } from "../../../../lib/prisma";
+import { dbAll } from "../../../../lib/db";
 
 export async function GET(req) {
   try {
@@ -10,13 +10,20 @@ export async function GET(req) {
       return NextResponse.json({ error: "Brak uprawnień" }, { status: 403 });
     }
 
-    const invoices = await prisma.serviceInvoice.findMany({
-      orderBy: { date: "desc" },
-      include: {
-        truck: {
-          select: { id: true, brand: true, model: true, plate: true, fleetNumber: true }
-        }
-      }
+    const invoicesRaw = await dbAll("SELECT * FROM ServiceInvoice ORDER BY date DESC");
+    const truckIds = invoicesRaw.map(i => i.truckId).filter(id => id);
+
+    let trucks = [];
+    if (truckIds.length > 0) {
+      const placeholders = truckIds.map(() => '?').join(',');
+      trucks = await dbAll(`SELECT id, brand, model, plate, fleetNumber FROM Truck WHERE id IN (${placeholders})`, truckIds);
+    }
+
+    const invoices = invoicesRaw.map(i => {
+      return {
+        ...i,
+        truck: i.truckId ? trucks.find(t => t.id === i.truckId) || null : null
+      };
     });
 
     return NextResponse.json({ success: true, invoices });

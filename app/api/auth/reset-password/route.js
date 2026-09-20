@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbRun } from "../../../../lib/db";
 import bcrypt from "bcryptjs";
 
 export async function POST(req) {
@@ -14,33 +14,22 @@ export async function POST(req) {
       return NextResponse.json({ message: "Hasło musi mieć minimum 6 znaków." }, { status: 400 });
     }
 
-    // Find valid token
-    const resetRecord = await prisma.passwordResetToken.findUnique({
-      where: { token },
-    });
+    const resetRecord = await dbOne("SELECT * FROM PasswordResetToken WHERE token = ?", [token]);
 
     if (!resetRecord) {
       return NextResponse.json({ message: "Nieprawidłowy lub wygasły token." }, { status: 400 });
     }
 
     if (new Date() > new Date(resetRecord.expires)) {
-      // Clean up expired token
-      await prisma.passwordResetToken.delete({ where: { id: resetRecord.id } });
+      await dbRun("DELETE FROM PasswordResetToken WHERE id = ?", [resetRecord.id]);
       return NextResponse.json({ message: "Token wygasł. Wygeneruj nowy link." }, { status: 400 });
     }
 
-    // Update password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    await prisma.user.update({
-      where: { email: resetRecord.email },
-      data: { password: hashedPassword },
-    });
+    await dbRun("UPDATE User SET password = ?, updatedAt = NOW() WHERE email = ?", [hashedPassword, resetRecord.email]);
 
-    // Clean up used token
-    await prisma.passwordResetToken.delete({
-      where: { id: resetRecord.id },
-    });
+    await dbRun("DELETE FROM PasswordResetToken WHERE id = ?", [resetRecord.id]);
 
     return NextResponse.json({ message: "Hasło zostało pomyślnie zmienione." }, { status: 200 });
   } catch (error) {

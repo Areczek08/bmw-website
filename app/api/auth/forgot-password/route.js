@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../../lib/prisma";
+import { dbOne, dbRun, generateId } from "../../../../lib/db";
 import crypto from "crypto";
 import { sendPasswordResetEmail } from "../../../../lib/mailer";
 
@@ -14,19 +14,11 @@ export async function POST(req) {
     const input = email.trim();
     const cleanInput = input.toLowerCase();
 
-    // Find user by email, name (login) or discordNick
-    const user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { email: cleanInput },
-          { email: input },
-          { name: input },
-          { discordNick: input },
-          { name: cleanInput },
-          { discordNick: cleanInput }
-        ]
-      },
-    });
+    const user = await dbOne(`
+      SELECT * FROM User 
+      WHERE email = ? OR email = ? OR name = ? OR discordNick = ? OR name = ? OR discordNick = ?
+      LIMIT 1
+    `, [cleanInput, input, input, input, cleanInput, cleanInput]);
 
     if (!user || !user.email) {
       return NextResponse.json({ 
@@ -34,24 +26,17 @@ export async function POST(req) {
       }, { status: 404 });
     }
 
-    // Generate secure token
     const token = crypto.randomBytes(32).toString("hex");
-    const expires = new Date(Date.now() + 3600000); // 1 hour from now
+    const expires = new Date(Date.now() + 3600000); 
 
-    // Save token in DB, replacing any existing ones for this email
-    await prisma.passwordResetToken.deleteMany({
-      where: { email: user.email },
-    });
+    await dbRun("DELETE FROM PasswordResetToken WHERE email = ?", [user.email]);
 
-    await prisma.passwordResetToken.create({
-      data: {
-        email: user.email,
-        token,
-        expires,
-      },
-    });
+    const id = generateId();
+    await dbRun(`
+      INSERT INTO PasswordResetToken (id, email, token, expires, createdAt) 
+      VALUES (?, ?, ?, ?, NOW())
+    `, [id, user.email, token, expires]);
 
-    // Build dynamic reset link using request origin or process.env
     const host = req.headers.get("host");
     const proto = req.headers.get("x-forwarded-proto") || (host?.includes("localhost") ? "http" : "https");
     const origin = host ? `${proto}://${host}` : (process.env.NEXTAUTH_URL || "https://system.vsbojarlogistic.pl");
@@ -59,11 +44,7 @@ export async function POST(req) {
     const resetLink = `${origin}/reset-password?token=${token}`;
     const userName = user.firstName || user.name || user.email.split("@")[0];
 
-    const emailSent = await sendPasswordResetEmail(user.email, resetLink, userName);
-
-    if (!emailSent) {
-      return NextResponse.json({ message: "Błąd podczas wysyłania wiadomości e-mail na serwerze SMTP." }, { status: 500 });
-    }
+    sendPasswordResetEmail(user.email, resetLink, userName).catch(e => console.error("Forgot password email error:", e));
 
     return NextResponse.json({ 
       message: "Link został pomyślnie wysłany na Twój adres e-mail.",

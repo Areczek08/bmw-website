@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "../../../lib/prisma";
+import { dbAll } from "../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../auth/[...nextauth]/route";
 
@@ -13,16 +13,27 @@ export async function GET(req) {
 
     const isAdmin = session.user.role === "BOARD" || session.user.role === "OWNER";
     
-    // Jeśli to Zarząd, widzi wszystkie wnioski. Jeśli kierowca - tylko swoje.
-    const whereClause = isAdmin ? {} : { userId: session.user.id };
+    const whereClause = isAdmin ? "" : "WHERE r.userId = ?";
+    const params = isAdmin ? [] : [session.user.id];
 
-    const requests = await prisma.request.findMany({
-      where: whereClause,
-      include: {
-        user: { select: { name: true, image: true, role: true } },
-        truck: { select: { brand: true, model: true, plate: true, fleetNumber: true } }
-      },
-      orderBy: { createdAt: "desc" }
+    const requestsData = await dbAll(`
+      SELECT r.*, 
+             u.name as 'u_name', u.image as 'u_image', u.role as 'u_role',
+             t.brand as 't_brand', t.model as 't_model', t.plate as 't_plate', t.fleetNumber as 't_fleetNumber'
+      FROM Request r
+      LEFT JOIN User u ON r.userId = u.id
+      LEFT JOIN Truck t ON r.truckId = t.id
+      ${whereClause}
+      ORDER BY r.createdAt DESC
+    `, params);
+
+    const requests = requestsData.map(r => {
+      const { u_name, u_image, u_role, t_brand, t_model, t_plate, t_fleetNumber, ...reqData } = r;
+      return {
+        ...reqData,
+        user: r.userId ? { name: u_name, image: u_image, role: u_role } : null,
+        truck: r.truckId ? { brand: t_brand, model: t_model, plate: t_plate, fleetNumber: t_fleetNumber } : null
+      };
     });
 
     return NextResponse.json({ requests });

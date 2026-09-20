@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../../auth/[...nextauth]/route";
-import { prisma } from "../../../../../../lib/prisma";
+import { dbAll, dbRun, dbOne, generateId } from "../../../../../../lib/db";
 
 function generateFuelCardNumber() {
   const parts = [];
@@ -20,10 +20,7 @@ export async function GET(request, { params }) {
 
     const { id } = await params;
 
-    const cards = await prisma.fuelCard.findMany({
-      where: { userId: id },
-      orderBy: { issuedAt: "desc" }
-    });
+    const cards = await dbAll("SELECT * FROM FuelCard WHERE userId = ? ORDER BY issuedAt DESC", [id]);
 
     return NextResponse.json(cards);
   } catch (error) {
@@ -52,14 +49,14 @@ export async function POST(request, { params }) {
     // but usually 1 of each type is enough. We'll allow generating.
 
     const newCardNumber = generateFuelCardNumber();
+    const newId = generateId();
 
-    const card = await prisma.fuelCard.create({
-      data: {
-        userId: id,
-        cardNumber: newCardNumber,
-        type: type
-      }
-    });
+    await dbRun(
+      "INSERT INTO FuelCard (id, userId, cardNumber, type, issuedAt) VALUES (?, ?, ?, ?, NOW())",
+      [newId, id, newCardNumber, type]
+    );
+    
+    const card = await dbOne("SELECT * FROM FuelCard WHERE id = ?", [newId]);
 
     return NextResponse.json(card, { status: 201 });
   } catch (error) {
@@ -83,9 +80,7 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ error: "Brak ID karty" }, { status: 400 });
     }
 
-    await prisma.fuelCard.delete({
-      where: { id: cardId }
-    });
+    await dbRun("DELETE FROM FuelCard WHERE id = ?", [cardId]);
 
     return NextResponse.json({ success: true });
   } catch (error) {
