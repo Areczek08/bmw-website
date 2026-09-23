@@ -16,7 +16,7 @@ export async function GET(req) {
 
     const jobs = await dbAll(`
       SELECT id, userId, startCity, endCity, sourceCompany, destinationCompany, 
-             cargo, weight, distance, plannedDistance, breakdowns, averageFuel, 
+             cargo, weight, distance, plannedDistance, income, fuelConsumed, driveTimeMinutes, breakdowns, averageFuel, 
              date, status, createdAt, description, dispatcherComment 
       FROM Job 
       WHERE userId = ? 

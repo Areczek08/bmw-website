@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "../../../../lib/db";
+import { dbSession } from "../../../../lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
@@ -18,20 +18,22 @@ export async function POST(req) {
       return NextResponse.json({ error: "Nieprawidłowe dane" }, { status: 400 });
     }
 
-    await db(async (conn) => {
-      await conn.query("START TRANSACTION");
-      try {
-        for (let i = 0; i < orderedIds.length; i++) {
-          await conn.query("UPDATE User SET displayOrder = ?, updatedAt = NOW() WHERE id = ?", [i + 1, orderedIds[i]]);
-        }
-        await conn.query("COMMIT");
-      } catch (err) {
-        await conn.query("ROLLBACK");
-        throw err;
-      }
-    });
+    const userCompany = session.user.companyId || "BMS";
+    const isOwner = session.user.role === "OWNER";
 
-    return NextResponse.json({ success: true });
+    return await dbSession(async (db) => {
+      await db.transaction(async (tx) => {
+        for (let i = 0; i < orderedIds.length; i++) {
+          if (isOwner) {
+            await tx.run("UPDATE User SET displayOrder = ?, updatedAt = NOW() WHERE id = ?", [i + 1, orderedIds[i]]);
+          } else {
+            await tx.run("UPDATE User SET displayOrder = ?, updatedAt = NOW() WHERE id = ? AND companyId = ?", [i + 1, orderedIds[i], userCompany]);
+          }
+        }
+      });
+
+      return NextResponse.json({ success: true });
+    });
   } catch (error) {
     console.error("Błąd zapisywania kolejności:", error);
     return NextResponse.json({ error: "Wystąpił błąd serwera." }, { status: 500 });

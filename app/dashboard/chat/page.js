@@ -81,6 +81,7 @@ function CustomAudioPlayer({ src, isMe }) {
       <audio 
         ref={audioRef} 
         src={src} 
+        preload="none"
         onTimeUpdate={handleTimeUpdate} 
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
@@ -187,8 +188,8 @@ export default function ChatPage() {
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
-      if (file.size > 2 * 1024 * 1024) {
-        toast.error("Plik za duży (max 2MB)");
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error("Plik za duży (max 5MB)");
         return;
       }
       const reader = new FileReader();
@@ -237,8 +238,11 @@ export default function ChatPage() {
   };
 
   const lastMessageIdRef = useRef(null);
+  const isFetchingRef = useRef(false);
 
   const fetchMessages = async (forceFull = false) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
     try {
       const lastId = forceFull ? null : lastMessageIdRef.current;
       const url = lastId ? `/api/chat?after=${lastId}` : "/api/chat";
@@ -264,7 +268,9 @@ export default function ChatPage() {
         }
       }
     } catch (e) {
-      console.error(e);
+      console.error("Błąd pobierania wiadomości:", e);
+    } finally {
+      isFetchingRef.current = false;
     }
   };
 
@@ -586,7 +592,7 @@ export default function ChatPage() {
                 <div className="relative shrink-0 flex items-end">
                   <div className="w-10 h-10 rounded-2xl overflow-hidden bg-zinc-800 border border-zinc-700 flex items-center justify-center shadow-md">
                     {msg.user?.image ? (
-                      <img src={msg.user?.image} alt="Avatar" className="w-full h-full object-cover" />
+                      <img src={msg.user?.image} alt="Avatar" loading="lazy" decoding="async" className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-zinc-300 font-bold text-sm uppercase">
                         {(msg.user?.firstName || msg.user?.name || "?").charAt(0)}
@@ -641,6 +647,8 @@ export default function ChatPage() {
                           <img 
                             src={msg.imageUrl} 
                             alt="attachment" 
+                            loading="lazy"
+                            decoding="async"
                             onClick={() => setFullscreenImage(msg.imageUrl)}
                             className="mt-2.5 rounded-xl max-w-full h-auto max-h-60 object-cover cursor-zoom-in hover:opacity-95 transition-opacity border border-white/10 shadow-md" 
                           />

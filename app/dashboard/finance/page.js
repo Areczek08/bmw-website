@@ -1,6 +1,6 @@
 "use client";
 import { toast } from "sonner";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   TrendingUp, DollarSign, Activity, Calculator, CheckCircle2, User, 
@@ -88,8 +88,14 @@ export default function FinancePage() {
     setCosts(prev => ({ ...prev, [field]: Number(value) }));
   };
 
+  const isSubmittingRef = useRef(false);
+
   const executeSettleMonth = async () => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     setSettling(true);
+
+    const idempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `settle-${Date.now()}`;
     const payload = {
       month: Number(month),
       year: Number(year),
@@ -102,22 +108,27 @@ export default function FinancePage() {
     try {
       const res = await fetch("/api/finance/settle", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-idempotency-key": idempotencyKey
+        },
         body: JSON.stringify(payload)
       });
       const data = await res.json();
       
-      if(data.success) {
+      if(res.ok && data.success) {
         toast.success("Pomyślnie rozliczono miesiąc! Saldo firmy zostało zaktualizowane.");
         setSettleMode(false);
+        setConfirmConfig(null);
         fetchFinanceData();
       } else {
-        toast.error("Błąd: " + data.error);
+        toast.error("Błąd: " + (data.error || "Wystąpił błąd rozliczenia."));
       }
     } catch (e) {
       toast.error("Błąd połączenia.");
     } finally {
       setSettling(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -130,11 +141,19 @@ export default function FinancePage() {
   };
 
   const executeSendPayment = async () => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     setSendingPayment(true);
+
+    const idempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}`;
+
     try {
       const res = await fetch("/api/finance/transfer", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-idempotency-key": idempotencyKey
+        },
         body: JSON.stringify({
           userId: paymentData.userId,
           amount: Number(paymentData.amount),
@@ -144,18 +163,20 @@ export default function FinancePage() {
       });
       const data = await res.json();
       
-      if(data.success) {
+      if(res.ok && data.success) {
         toast.success("Przelew został pomyślnie zrealizowany!");
         setPaymentData({ ...paymentData, amount: "", userId: "" });
         setPaymentMode(false);
+        setConfirmConfig(null);
         fetchFinanceData();
       } else {
-        toast.error("Błąd: " + data.error);
+        toast.error("Błąd: " + (data.error || "Wystąpił błąd przelewu."));
       }
     } catch (e) {
       toast.error("Błąd połączenia.");
     } finally {
       setSendingPayment(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -450,6 +471,7 @@ export default function FinancePage() {
             onConfirm={confirmConfig.onConfirm}
             title={confirmConfig.title}
             message={confirmConfig.message}
+            isLoading={settling || sendingPayment}
           />
         )}
       </AnimatePresence>

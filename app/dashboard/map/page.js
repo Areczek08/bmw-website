@@ -1,8 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useEffect } from "react";
-import { MapPin } from "lucide-react";
+import { MapPin, Radio, Wifi, WifiOff, RefreshCw } from "lucide-react";
+import { useRealtimeMap } from "../../hooks/useRealtimeMap";
 
 // Dynamiczny import mapy, aby wyłączyć Server-Side Rendering (wymóg Leaflet)
 const MapComponent = dynamic(() => import("../../components/MapComponent"), {
@@ -16,24 +16,47 @@ const MapComponent = dynamic(() => import("../../components/MapComponent"), {
 });
 
 export default function MapPage() {
-  const [drivers, setDrivers] = useState([]);
-
-  useEffect(() => {
-    fetch('/api/map')
-      .then(res => res.json())
-      .then(data => {
-        if(Array.isArray(data)) {
-          setDrivers(data);
-        }
-      })
-      .catch(console.error);
-  }, []);
+  const { drivers, status, lastUpdated, isLive } = useRealtimeMap();
 
   return (
     <div className="space-y-6 h-full flex flex-col">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Mapa Dyspozytorni</h1>
-        <p className="text-zinc-500 dark:text-zinc-400 mt-1">Lokalizacja floty na podstawie ostatnich zrealizowanych tras.</p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Mapa Dyspozytorni</h1>
+          <p className="text-zinc-500 dark:text-zinc-400 mt-1">
+            Lokalizacja floty w czasie rzeczywistym na podstawie telemetrii i tras.
+          </p>
+        </div>
+
+        {/* Realtime Connection Status Indicator */}
+        <div className="flex items-center gap-2.5">
+          {status === "LIVE" ? (
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold tracking-wide">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <Radio size={13} className="shrink-0" />
+              <span>LIVE REALTIME</span>
+            </div>
+          ) : status === "POLLING" ? (
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold tracking-wide">
+              <RefreshCw size={13} className="animate-spin shrink-0" />
+              <span>POLLING FALLBACK (35s)</span>
+            </div>
+          ) : (
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-semibold tracking-wide">
+              <WifiOff size={13} className="shrink-0" />
+              <span>OFFLINE</span>
+            </div>
+          )}
+
+          {lastUpdated && (
+            <span className="text-[11px] text-zinc-500 hidden md:inline">
+              Aktualizacja: {lastUpdated.toLocaleTimeString('pl-PL')}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 w-full min-h-[600px] rounded-2xl shadow-sm relative">

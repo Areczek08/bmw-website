@@ -23,20 +23,52 @@ export async function POST(req) {
     }
 
     const id = generateId();
+    const parsedDistance = parseInt(distance) || 0;
+    const parsedIncome = parseFloat(income) || 0;
+    const parsedFuelConsumed = fuelConsumed ? parseFloat(fuelConsumed) : null;
+    const parsedDriveTime = driveTimeMinutes ? parseInt(driveTimeMinutes) : null;
+    const calculatedAvgFuel = (parsedFuelConsumed && parsedDistance > 0) 
+      ? parseFloat(((parsedFuelConsumed / parsedDistance) * 100).toFixed(2)) 
+      : null;
+
     await dbRun(
       `INSERT INTO Job (
         id, userId, startCity, endCity, distance, cargo, 
+        income, fuelConsumed, driveTimeMinutes, averageFuel,
         description, summaryScreenshot, truckScreenshot, status, date, createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NOW(), NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NOW(), NOW(), NOW())`,
       [
-        id, session.user.id, startCity, endCity, parseInt(distance) || 0, cargo,
-        description || null, summaryScreenshot, truckScreenshot || null
+        id, 
+        session.user.id, 
+        startCity, 
+        endCity, 
+        parsedDistance, 
+        cargo,
+        parsedIncome,
+        parsedFuelConsumed,
+        parsedDriveTime,
+        calculatedAvgFuel,
+        description || null, 
+        summaryScreenshot, 
+        truckScreenshot || null
       ]
     );
 
     const job = {
-      id, userId: session.user.id, startCity, endCity, distance: parseInt(distance), 
-      cargo, description, summaryScreenshot, truckScreenshot, status: 'PENDING'
+      id, 
+      userId: session.user.id, 
+      startCity, 
+      endCity, 
+      distance: parsedDistance, 
+      cargo, 
+      income: parsedIncome,
+      fuelConsumed: parsedFuelConsumed,
+      driveTimeMinutes: parsedDriveTime,
+      averageFuel: calculatedAvgFuel,
+      description, 
+      summaryScreenshot, 
+      truckScreenshot, 
+      status: 'PENDING'
     };
 
     return NextResponse.json({ success: true, job }, { status: 201 });

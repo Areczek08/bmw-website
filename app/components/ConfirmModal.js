@@ -1,9 +1,18 @@
 "use client";
 
-import { motion, AnimatePresence } from "framer-motion";
-import { AlertTriangle } from "lucide-react";
+import { motion } from "framer-motion";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 
-export function ConfirmModal({ isOpen, onClose, onConfirm, title, message, confirmText = "Tak, potwierdzam", cancelText = "Anuluj" }) {
+export function ConfirmModal({ 
+  isOpen, 
+  onClose, 
+  onConfirm, 
+  title, 
+  message, 
+  confirmText = "Tak, potwierdzam", 
+  cancelText = "Anuluj",
+  isLoading = false 
+}) {
   if (!isOpen) return null;
 
   return (
@@ -11,7 +20,7 @@ export function ConfirmModal({ isOpen, onClose, onConfirm, title, message, confi
       <motion.div 
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-        onClick={onClose}
+        onClick={isLoading ? undefined : onClose}
       />
       <motion.div 
         initial={{ opacity: 0, scale: 0.9, y: 20 }} 
@@ -27,16 +36,24 @@ export function ConfirmModal({ isOpen, onClose, onConfirm, title, message, confi
         
         <div className="flex gap-4">
           <button 
+            type="button"
+            disabled={isLoading}
             onClick={onClose}
-            className="flex-1 py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl font-bold transition-colors"
+            className="flex-1 py-3 px-4 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
           >
             {cancelText}
           </button>
           <button 
-            onClick={() => { onConfirm(); onClose(); }}
-            className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold shadow-[0_0_20px_rgba(239,68,68,0.3)] transition-all"
+            type="button"
+            disabled={isLoading}
+            onClick={async () => {
+              if (isLoading) return;
+              await onConfirm();
+            }}
+            className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-xl font-bold shadow-[0_0_20px_rgba(239,68,68,0.3)] transition-all flex items-center justify-center gap-2"
           >
-            {confirmText}
+            {isLoading && <RefreshCw className="w-4 h-4 animate-spin" />}
+            <span>{isLoading ? "Przetwarzanie..." : confirmText}</span>
           </button>
         </div>
       </motion.div>

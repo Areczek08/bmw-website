@@ -206,6 +206,9 @@ model Job {
   weight             Int       @default(0)
   distance           Int
   plannedDistance    Int       @default(0)
+  income             Float?
+  fuelConsumed       Float?
+  driveTimeMinutes   Int?
   breakdowns         String    @default("Brak")
   averageFuel        Float?
   date               DateTime  @default(now())
@@ -326,6 +329,8 @@ model MonthlySettlement {
   createdAt       DateTime @default(now())
   companyId       String?  @default("BMS")
   company         Company? @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, month, year], map: "uq_monthly_settlement")
 }
 
 model Company {
@@ -545,4 +550,23 @@ model ServiceInvoice {
   date        DateTime @default(now())
   paidAt      DateTime?
 }
+
+model IdempotencyKey {
+  id           String   @id
+  action       String   @db.VarChar(64)
+  statusCode   Int
+  responseBody String   @db.Text
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model MediaAsset {
+  id        String   @id
+  mimeType  String   @db.VarChar(64)
+  data      Bytes
+  size      Int
+  createdAt DateTime @default(now())
+}
+
 

@@ -1,32 +1,63 @@
-import { dbAll } from "../../lib/db";
-import { Truck as TruckIcon, User, Settings, Info, MapPin } from "lucide-react";
+import { dbSession } from "../../lib/db";
+import { getSafeAvatarUrl } from "../../lib/avatar";
+import { getVehicleImageVariants } from "../../lib/fleetImage";
+import VehicleCard from "../components/VehicleCard";
+import { Info } from "lucide-react";
 
-export const dynamic = "force-dynamic";
+// Edge CDN caching: revalidate every 60 seconds to avoid hitting MariaDB on every public visit
+export const revalidate = 60;
 
 export default async function FlotaPage() {
   let trucks = [];
   try {
-    const rawTrucks = await dbAll("SELECT id, brand, model, plate, fleetNumber, imageUrl, assignedDriverId, attachedTrailerId FROM Truck ORDER BY fleetNumber ASC");
-    
-    // Fetch assigned drivers
-    const driverIds = rawTrucks.filter(t => t.assignedDriverId).map(t => t.assignedDriverId);
-    let drivers = [];
-    if (driverIds.length > 0) {
-      drivers = await dbAll(`SELECT id, name, image FROM User WHERE id IN (${driverIds.map(() => '?').join(',')})`, driverIds);
-    }
-    
-    // Fetch attached trailers
-    const trailerIds = rawTrucks.filter(t => t.attachedTrailerId).map(t => t.attachedTrailerId);
-    let trailers = [];
-    if (trailerIds.length > 0) {
-      trailers = await dbAll(`SELECT id, brand, plate, imageUrl FROM Trailer WHERE id IN (${trailerIds.map(() => '?').join(',')})`, trailerIds);
-    }
-    
-    trucks = rawTrucks.map(t => ({
-      ...t,
-      assignedDriver: drivers.find(d => d.id === t.assignedDriverId) || null,
-      attachedTrailer: trailers.find(tr => tr.id === t.attachedTrailerId) || null,
-    }));
+    await dbSession(async (db) => {
+      const rawTrucks = await db.all(
+        "SELECT id, brand, model, plate, fleetNumber, imageUrl, assignedDriverId, attachedTrailerId FROM Truck ORDER BY fleetNumber ASC"
+      );
+      
+      // Fetch assigned drivers with safe avatar resolution (no Base64 blobs)
+      const driverIds = rawTrucks.filter(t => t.assignedDriverId).map(t => t.assignedDriverId);
+      let drivers = [];
+      if (driverIds.length > 0) {
+        const placeholders = driverIds.map(() => '?').join(',');
+        drivers = await db.all(
+          `SELECT id, name, firstName, discordNick, image FROM User WHERE id IN (${placeholders})`,
+          driverIds
+        );
+      }
+      
+      // Fetch attached trailers
+      const trailerIds = rawTrucks.filter(t => t.attachedTrailerId).map(t => t.attachedTrailerId);
+      let trailers = [];
+      if (trailerIds.length > 0) {
+        const placeholders = trailerIds.map(() => '?').join(',');
+        trailers = await db.all(
+          `SELECT id, brand, plate, imageUrl FROM Trailer WHERE id IN (${placeholders})`,
+          trailerIds
+        );
+      }
+      
+      trucks = rawTrucks.map(t => {
+        const driver = drivers.find(d => d.id === t.assignedDriverId);
+        const trailer = trailers.find(tr => tr.id === t.attachedTrailerId);
+
+        return {
+          ...t,
+          imageVariants: getVehicleImageVariants(t.imageUrl),
+          assignedDriver: driver ? {
+            id: driver.id,
+            name: driver.discordNick || driver.name || driver.firstName || "Kierowca",
+            image: getSafeAvatarUrl(driver)
+          } : null,
+          attachedTrailer: trailer ? {
+            id: trailer.id,
+            brand: trailer.brand,
+            plate: trailer.plate,
+            imageUrl: trailer.imageUrl
+          } : null,
+        };
+      });
+    });
   } catch (error) {
     console.error("Błąd pobierania floty:", error);
   }
@@ -43,7 +74,7 @@ export default async function FlotaPage() {
             Na żywo z Bojar Manager System
           </div>
           <h1 className="text-4xl md:text-6xl font-bold text-white mb-6">Nasza Flota</h1>
-          <p className="text-xl text-zinc-400 mb-8">
+          <p className="text-xl text-zinc-400 mb-8 max-w-3xl mx-auto">
             Poniżej znajduje się lista wszystkich naszych pojazdów, zintegrowana w czasie rzeczywistym z systemem Bojar Manager.
           </p>
           <div className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-900 border border-zinc-800 rounded-full text-sm font-medium text-zinc-300">
@@ -56,73 +87,12 @@ export default async function FlotaPage() {
       <section className="px-4">
         <div className="max-w-7xl mx-auto">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {trucks.map((truck) => (
-              <div key={truck.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden hover:border-zinc-700 transition-colors group">
-                <div className="h-48 bg-zinc-800 relative flex items-center justify-center overflow-hidden">
-                  {truck.imageUrl ? (
-                    <>
-                      <img
-                        src={truck.imageUrl}
-                        alt={`${truck.brand} ${truck.model}`}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/80 via-transparent to-black/30 pointer-events-none" />
-                    </>
-                  ) : (
-                    <>
-                      <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'radial-gradient(#fff 1px, transparent 1px)', backgroundSize: '10px 10px' }}></div>
-                      <TruckIcon size={64} className="text-zinc-700 group-hover:scale-110 transition-transform duration-500" />
-                    </>
-                  )}
-                  
-                  <div className="absolute top-4 left-4 z-10 bg-zinc-950/80 backdrop-blur-md px-3 py-1 rounded-lg border border-zinc-700 text-white font-bold tracking-wider">
-                    {truck.fleetNumber}
-                  </div>
-                  
-                  <div className="absolute top-4 right-4 z-10 bg-blue-600/20 backdrop-blur-md text-blue-400 px-3 py-1 rounded-lg border border-blue-500/30 text-sm font-medium">
-                    {truck.plate}
-                  </div>
-                </div>
-                
-                <div className="p-6">
-                  <h3 className="text-2xl font-bold text-white mb-1">{truck.brand} {truck.model}</h3>
-                  <p className="text-zinc-500 text-sm mb-6 flex items-center gap-1">
-                    <Settings size={14} /> Pojazd spełnia normy E6
-                  </p>
-                  
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-3 p-3 rounded-xl bg-zinc-950 border border-zinc-800/50">
-                      <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden">
-                        {truck.assignedDriver?.image ? (
-                          <img src={truck.assignedDriver.image} alt="Kierowca" className="w-full h-full object-cover" />
-                        ) : (
-                          <User size={20} className="text-zinc-400" />
-                        )}
-                      </div>
-                      <div>
-                        <div className="text-xs text-zinc-500 mb-0.5">Przypisany Kierowca</div>
-                        <div className="text-sm font-medium text-white">{truck.assignedDriver ? truck.assignedDriver.name : "Brak przypisanego kierowcy"}</div>
-                      </div>
-                    </div>
-                    
-                    <div className="flex items-center gap-3 p-3 rounded-xl bg-zinc-950 border border-zinc-800/50">
-                      <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden">
-                        {truck.attachedTrailer?.imageUrl ? (
-                          <img src={truck.attachedTrailer.imageUrl} alt="Naczepa" className="w-full h-full object-cover" />
-                        ) : (
-                          <TruckIcon size={20} className="text-zinc-400" />
-                        )}
-                      </div>
-                      <div>
-                        <div className="text-xs text-zinc-500 mb-0.5">Naczepa</div>
-                        <div className="text-sm font-medium text-white">
-                          {truck.attachedTrailer ? `${truck.attachedTrailer.brand} (${truck.attachedTrailer.plate})` : "Brak podpiętej naczepy"}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+            {trucks.map((truck, idx) => (
+              <VehicleCard 
+                key={truck.id} 
+                truck={truck} 
+                priority={idx < 6} 
+              />
             ))}
             
             {trucks.length === 0 && (

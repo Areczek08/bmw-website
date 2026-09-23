@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../../auth/[...nextauth]/route";
-import { dbOne, dbRun, generateId } from "../../../../../lib/db";
+import { dbSession, generateId } from "../../../../../lib/db";
+import { extractIdempotencyKey, checkIdempotency, recordIdempotency } from "../../../../../lib/idempotency";
 
 export async function POST(req) {
   try {
@@ -10,55 +11,118 @@ export async function POST(req) {
       return NextResponse.json({ error: "Brak uprawnień" }, { status: 403 });
     }
 
-    const { leasingId, month, year } = await req.json();
+    const body = await req.json();
+    const { leasingId, month, year } = body;
 
-    if (!leasingId || !month || !year) {
+    const parsedMonth = parseInt(month, 10);
+    const parsedYear = parseInt(year, 10);
+
+    if (!leasingId || isNaN(parsedMonth) || isNaN(parsedYear)) {
       return NextResponse.json({ error: "Brakuje danych (leasingId, month, year)" }, { status: 400 });
     }
 
-    const leasing = await dbOne("SELECT * FROM Leasing WHERE id = ?", [leasingId]);
+    const idempotencyKey = extractIdempotencyKey(req, body);
+    const companyId = session.user.companyId || "BMS";
 
-    if (!leasing) {
-      return NextResponse.json({ error: "Leasing nie istnieje" }, { status: 404 });
-    }
+    return await dbSession(async (db) => {
+      // 1. Check Idempotency Key
+      if (idempotencyKey) {
+        const idempCheck = await checkIdempotency(idempotencyKey, db);
+        if (idempCheck.isDuplicate) {
+          return NextResponse.json(idempCheck.response, { 
+            status: idempCheck.statusCode,
+            headers: { "Cache-Control": "private, no-cache, no-store, must-revalidate" }
+          });
+        }
+      }
 
-    const truck = await dbOne("SELECT * FROM Truck WHERE id = ?", [leasing.truckId]);
-    leasing.truck = truck || null;
+      // 2. Atomic Transaction
+      await db.transaction(async (tx) => {
+        const leasing = await tx.one(
+          "SELECT id, truckId, monthlyRate FROM Leasing WHERE id = ?", 
+          [leasingId]
+        );
 
-    const existingPayment = await dbOne(
-      "SELECT * FROM LeasingPayment WHERE leasingId = ? AND month = ? AND year = ?",
-      [leasingId, month, year]
-    );
+        if (!leasing) {
+          const err = new Error("LEASING_NOT_FOUND");
+          err.code = "LEASING_NOT_FOUND";
+          throw err;
+        }
 
-    if (existingPayment) {
+        const existingPayment = await tx.one(
+          "SELECT id FROM LeasingPayment WHERE leasingId = ? AND month = ? AND year = ? FOR UPDATE",
+          [leasingId, parsedMonth, parsedYear]
+        );
+
+        if (existingPayment) {
+          const err = new Error("ALREADY_PAID");
+          err.code = "ALREADY_PAID";
+          throw err;
+        }
+
+        const company = await tx.one(
+          "SELECT id, balance FROM Company WHERE id = ? FOR UPDATE", 
+          [companyId]
+        );
+
+        if (!company || Number(company.balance) < Number(leasing.monthlyRate)) {
+          const err = new Error("INSUFFICIENT_FUNDS");
+          err.code = "INSUFFICIENT_FUNDS";
+          throw err;
+        }
+
+        const truck = await tx.one(
+          "SELECT brand, model, plate FROM Truck WHERE id = ?", 
+          [leasing.truckId]
+        );
+
+        const paymentId = generateId();
+        const transactionId = generateId();
+
+        const deductResult = await tx.run(
+          "UPDATE Company SET balance = balance - ?, updatedAt = NOW() WHERE id = ? AND balance >= ?",
+          [leasing.monthlyRate, companyId, leasing.monthlyRate]
+        );
+
+        if (deductResult.affectedRows === 0) {
+          const err = new Error("INSUFFICIENT_FUNDS");
+          err.code = "INSUFFICIENT_FUNDS";
+          throw err;
+        }
+
+        await tx.run(
+          "INSERT INTO CompanyTransaction (id, companyId, type, amount, category, description, date) VALUES (?, ?, 'EXPENSE', ?, 'Leasing', ?, NOW())",
+          [transactionId, companyId, leasing.monthlyRate, `Rata leasingu - ${truck?.brand || 'Pojazd'} ${truck?.model || ''} (${truck?.plate || ''}) za ${parsedMonth}/${parsedYear}`]
+        );
+
+        await tx.run(
+          "INSERT INTO LeasingPayment (id, leasingId, amount, month, year, paidAt, paidBy) VALUES (?, ?, ?, ?, ?, NOW(), ?)",
+          [paymentId, leasingId, leasing.monthlyRate, parsedMonth, parsedYear, session.user.id]
+        );
+      });
+
+      const responseData = { success: true };
+
+      if (idempotencyKey) {
+        await recordIdempotency(idempotencyKey, "PAY_LEASING", 200, responseData, db);
+      }
+
+      return NextResponse.json(responseData, {
+        status: 200,
+        headers: { "Cache-Control": "private, no-cache, no-store, must-revalidate" }
+      });
+    });
+
+  } catch (error) {
+    if (error.code === "ALREADY_PAID") {
       return NextResponse.json({ error: "Ta rata została już opłacona!" }, { status: 400 });
     }
-
-    const companyId = session.user.companyId || "BMS";
-    const company = await dbOne("SELECT * FROM Company WHERE id = ?", [companyId]);
-    if (!company) {
-      return NextResponse.json({ error: "Nie znaleziono ustawień firmy" }, { status: 404 });
-    }
-
-    if (company.balance < leasing.monthlyRate) {
+    if (error.code === "INSUFFICIENT_FUNDS") {
       return NextResponse.json({ error: "Brak wystarczających środków na koncie firmowym!" }, { status: 400 });
     }
-
-    const paymentId = generateId();
-    const transactionId = generateId();
-
-    await dbRun("UPDATE Company SET balance = balance - ?, updatedAt = NOW() WHERE id = ?", [leasing.monthlyRate, companyId]);
-    await dbRun(
-      "INSERT INTO CompanyTransaction (id, companyId, type, amount, category, description, date) VALUES (?, ?, 'EXPENSE', ?, 'Leasing', ?, NOW())",
-      [transactionId, companyId, leasing.monthlyRate, `Rata leasingu - ${truck?.brand || 'Pojazd'} ${truck?.model || ''} (${truck?.plate || ''}) za ${month}/${year}`]
-    );
-    await dbRun(
-      "INSERT INTO LeasingPayment (id, leasingId, amount, month, year, paidAt, paidBy) VALUES (?, ?, ?, ?, ?, NOW(), ?)",
-      [paymentId, leasingId, leasing.monthlyRate, month, year, session.user.id]
-    );
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
+    if (error.code === "LEASING_NOT_FOUND") {
+      return NextResponse.json({ error: "Leasing nie istnieje." }, { status: 404 });
+    }
     console.error("Leasing Pay Error:", error);
     return NextResponse.json({ error: "Wystąpił błąd podczas opłacania raty" }, { status: 500 });
   }

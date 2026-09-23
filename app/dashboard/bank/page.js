@@ -1,6 +1,6 @@
 "use client";
 import { toast } from "sonner";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Wallet, ArrowUpRight, ArrowDownRight, Clock, Building2, CreditCard, 
@@ -17,6 +17,7 @@ export default function BankPage() {
   const [drivers, setDrivers] = useState([]);
   const [transferData, setTransferData] = useState({ receiverId: '', amount: '', title: '' });
   const [transferLoading, setTransferLoading] = useState(false);
+  const isTransferringRef = useRef(false);
 
   useEffect(() => {
     fetchBankData();
@@ -58,11 +59,19 @@ export default function BankPage() {
 
   const handleTransferSubmit = async (e) => {
     e.preventDefault();
+    if (isTransferringRef.current) return;
+    isTransferringRef.current = true;
     setTransferLoading(true);
+
+    const idempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `p2p-${Date.now()}`;
+
     try {
       const res = await fetch("/api/user/bank/transfer", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-idempotency-key": idempotencyKey
+        },
         body: JSON.stringify(transferData)
       });
       const data = await res.json();
@@ -76,8 +85,10 @@ export default function BankPage() {
       }
     } catch(err) {
       toast.error("Błąd połączenia z serwerem.");
+    } finally {
+      setTransferLoading(false);
+      isTransferringRef.current = false;
     }
-    setTransferLoading(false);
   };
 
   const handleExportPdf = () => {

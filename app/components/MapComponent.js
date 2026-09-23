@@ -5,22 +5,49 @@ import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 
-const personSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-zinc-500"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
+const iconCache = new Map();
 
 const createIcon = (driver) => {
-  const avatarHtml = driver.image 
-    ? `<img src="${driver.image}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" />`
-    : personSvg;
+  const avatarUrl = driver.avatarUrl || driver.image;
+  const initial = (driver.name || driver.firstName || "?").charAt(0).toUpperCase();
+  const cacheKey = `${driver.id}_${avatarUrl || ""}_${initial}`;
 
-  return L.divIcon({
-    html: `<div style="background-color: white; border-radius: 50%; padding: 0px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); border: 2.5px solid #3b82f6; display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; overflow: hidden;">${avatarHtml}</div>`,
+  if (iconCache.has(cacheKey)) {
+    return iconCache.get(cacheKey);
+  }
+
+  // If driver has an avatar, render a responsive lazy image with graceful fallback to initial on error
+  // If driver does NOT have an avatar, render the initial directly without triggering any network request
+  const avatarHtml = avatarUrl ? `
+    <img 
+      src="${avatarUrl}" 
+      loading="lazy" 
+      decoding="async" 
+      alt="" 
+      style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block;" 
+      onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';" 
+    />
+    <div style="display: none; width: 100%; height: 100%; align-items: center; justify-content: center; background: #18181b; color: #a1a1aa; font-weight: bold; font-size: 14px; border-radius: 50%;">
+      ${initial}
+    </div>
+  ` : `
+    <div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #18181b; color: #a1a1aa; font-weight: bold; font-size: 14px; border-radius: 50%;">
+      ${initial}
+    </div>
+  `;
+
+  const icon = L.divIcon({
+    html: `<div style="background-color: white; border-radius: 50%; padding: 0px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); border: 2.5px solid #3b82f6; display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; overflow: hidden; position: relative;">${avatarHtml}</div>`,
     className: '',
     iconSize: [40, 40],
     iconAnchor: [20, 40],
   });
+
+  iconCache.set(cacheKey, icon);
+  return icon;
 };
 
-export default function MapComponent({ drivers }) {
+export default function MapComponent({ drivers = [] }) {
   useEffect(() => {
     // Rozwiązanie problemu ze znikającymi tilesami po załadowaniu
     setTimeout(() => {
@@ -41,19 +68,41 @@ export default function MapComponent({ drivers }) {
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
         
-        {drivers.map((driver) => (
-          driver.lastCoords ? (
+        {drivers.map((driver) => {
+          const avatarUrl = driver.avatarUrl || driver.image;
+          const initial = (driver.name || driver.firstName || "?").charAt(0).toUpperCase();
+
+          return driver.lastCoords ? (
             <Marker key={driver.id} position={driver.lastCoords} icon={createIcon(driver)}>
               <Popup className="dark-popup" closeButton={false}>
                 <div className="font-sans min-w-[240px] popup-content-animated p-1">
                   <div className="flex items-center gap-3 border-b border-zinc-800 pb-3 mb-3">
-                    {driver.image ? (
-                      <img src={driver.image} alt="avatar" className="w-11 h-11 rounded-full object-cover border border-zinc-700" />
-                    ) : (
-                      <div className="w-11 h-11 rounded-full bg-zinc-800 text-zinc-300 flex items-center justify-center font-bold text-lg border border-zinc-700">
-                        {driver.name.charAt(0)}
-                      </div>
-                    )}
+                    <div className="w-11 h-11 rounded-full overflow-hidden shrink-0 border border-zinc-700 bg-zinc-800 flex items-center justify-center">
+                      {avatarUrl ? (
+                        <>
+                          <img 
+                            src={avatarUrl} 
+                            alt="avatar" 
+                            loading="lazy" 
+                            decoding="async" 
+                            className="w-full h-full object-cover" 
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                              if (e.currentTarget.nextElementSibling) {
+                                e.currentTarget.nextElementSibling.style.display = 'flex';
+                              }
+                            }}
+                          />
+                          <div className="w-full h-full hidden items-center justify-center text-zinc-300 font-bold text-lg">
+                            ${initial}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-zinc-300 font-bold text-lg">
+                          {initial}
+                        </div>
+                      )}
+                    </div>
                     <div>
                       <h3 className="font-bold text-[16px] text-zinc-100 m-0 leading-tight drop-shadow-md">{driver.name}</h3>
                       <p className="text-xs text-blue-400 font-semibold m-0 flex items-center gap-1 mt-0.5">
@@ -89,8 +138,8 @@ export default function MapComponent({ drivers }) {
                 </div>
               </Popup>
             </Marker>
-          ) : null
-        ))}
+          ) : null;
+        })}
       </MapContainer>
       <style jsx global>{`
         .dark-popup .leaflet-popup-content-wrapper, 

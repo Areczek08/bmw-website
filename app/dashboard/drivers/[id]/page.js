@@ -104,31 +104,37 @@ export default function DriverProfilePage() {
     const file = e.target.files[0];
     if (!file) return;
 
-    if (file.size > 3 * 1024 * 1024) {
-      toast.error("Maksymalny rozmiar pliku to 3MB!");
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Maksymalny rozmiar pliku to 5MB!");
       return;
     }
 
     if (!file.type.startsWith('image/')) {
-      toast.error("Dozwolone są tylko zdjęcia lub GIFy!");
+      toast.error("Dozwolone są tylko zdjęcia (JPEG, PNG, WebP)!");
       return;
     }
 
     setIsUploadingAvatar(true);
 
     try {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setEditForm(prev => ({ ...prev, image: reader.result }));
-        setIsUploadingAvatar(false);
-      };
-      reader.onerror = () => {
-        toast.error("Wystąpił błąd podczas odczytu pliku.");
-        setIsUploadingAvatar(false);
-      };
-      reader.readAsDataURL(file);
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        body: formData
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success && data.url) {
+        setEditForm(prev => ({ ...prev, image: data.url }));
+        toast.success("Zdjęcie zostało pomyślnie przesłane!");
+      } else {
+        toast.error(data.error || "Wystąpił błąd podczas wgrywania zdjęcia.");
+      }
     } catch (err) {
-      toast.error("Wystąpił błąd.");
+      toast.error("Błąd połączenia podczas wgrywania pliku.");
+    } finally {
       setIsUploadingAvatar(false);
     }
   };
@@ -136,22 +142,50 @@ export default function DriverProfilePage() {
   const handleSave = async () => {
     setIsSaving(true);
     try {
+      const cleanPayload = {
+        name: editForm.name,
+        firstName: editForm.firstName,
+        aboutMe: editForm.aboutMe,
+        discordNick: editForm.discordNick,
+        facebookUrl: editForm.facebookUrl,
+        trucksBookUrl: editForm.trucksBookUrl,
+        trucksBookName: editForm.trucksBookName,
+        steamUrl: editForm.steamUrl,
+        spotifyUrl: editForm.spotifyUrl,
+        image: editForm.image !== undefined ? editForm.image : undefined
+      };
+
+      if (canManage) {
+        cleanPayload.birthDate = editForm.birthDate || null;
+        cleanPayload.contractType = editForm.contractType;
+        cleanPayload.role = editForm.role;
+        cleanPayload.rank = editForm.rank;
+        cleanPayload.driverStatus = editForm.driverStatus;
+        cleanPayload.monthlyLimitKm = editForm.monthlyLimitKm;
+        cleanPayload.initialMileage = editForm.initialMileage;
+        cleanPayload.initialDeliveries = editForm.initialDeliveries;
+        cleanPayload.truckId = editForm.truckId || null;
+        cleanPayload.trailerId = editForm.trailerId || null;
+      }
+
       const res = await fetch(`/api/drivers/${driver.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editForm)
+        body: JSON.stringify(cleanPayload)
       });
-      if(res.ok) {
+      const data = await res.json();
+      if(res.ok && data.success) {
         toast.success("Profil został zaktualizowany!");
         setIsEditing(false);
         fetchDriver();
       } else {
-        toast.error("Wystąpił błąd podczas zapisywania profilu.");
+        toast.error(data.error || "Wystąpił błąd podczas zapisywania profilu.");
       }
     } catch(err) {
       toast.error("Błąd połączenia.");
+    } finally {
+      setIsSaving(false);
     }
-    setIsSaving(false);
   };
 
   const handleAddCard = async (type) => {
@@ -258,15 +292,25 @@ export default function DriverProfilePage() {
                     placeholder="https://..."
                   />
                   <label className="cursor-pointer bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 px-3 py-3 rounded-xl text-xs font-bold transition-colors whitespace-nowrap text-zinc-200">
-                    {isUploadingAvatar ? "Wgrywanie..." : "Wgraj (Max 3MB)"}
+                    {isUploadingAvatar ? "Wgrywanie..." : "Wgraj (Max 5MB)"}
                     <input 
                       type="file" 
-                      accept="image/*" 
+                      accept="image/jpeg,image/png,image/webp" 
                       className="hidden" 
                       onChange={handleAvatarUpload}
                       disabled={isUploadingAvatar}
                     />
                   </label>
+                  {editForm.image && (
+                    <button
+                      type="button"
+                      onClick={() => setEditForm(prev => ({ ...prev, image: "" }))}
+                      className="px-3 py-3 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold transition-colors"
+                      title="Usuń zdjęcie profilowe"
+                    >
+                      Usuń
+                    </button>
+                  )}
                 </div>
               </div>
 

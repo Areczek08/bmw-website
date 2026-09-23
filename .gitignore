@@ -47,3 +47,4 @@ next-env.d.ts
 .open-next
 .wrangler
 test-old-db.js
+backups/

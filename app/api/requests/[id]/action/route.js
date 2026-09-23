@@ -14,8 +14,20 @@ export async function POST(req, { params }) {
     const { id } = await params;
     const { action, comment } = await req.json();
 
-    const request = await dbOne("SELECT * FROM Request WHERE id = ?", [id]);
+    const request = await dbOne(`
+      SELECT r.*, u.companyId as userCompanyId 
+      FROM Request r 
+      LEFT JOIN User u ON r.userId = u.id 
+      WHERE r.id = ?
+    `, [id]);
     if (!request) return NextResponse.json({ error: "Wniosek nie istnieje" }, { status: 404 });
+
+    if (session.user.role !== "OWNER") {
+      const userCompany = session.user.companyId || "BMS";
+      if (request.userCompanyId && request.userCompanyId !== userCompany) {
+        return NextResponse.json({ error: "Brak dostępu do wniosku innej firmy" }, { status: 403 });
+      }
+    }
 
     let newContent = request.content;
     if (comment && comment.trim() !== "") {

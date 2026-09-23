@@ -1,8 +1,22 @@
 import { NextResponse } from "next/server";
-import { dbAll } from "../../../../lib/db";
+import { dbOne } from "../../../../lib/db";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "../../auth/[...nextauth]/route";
+
+export const dynamic = "force-dynamic";
 
 export async function GET(req) {
   try {
+    const session = await getServerSession(authOptions);
+
+    if (!session || !session.user) {
+      return NextResponse.json({ error: "Brak autoryzacji" }, { status: 401 });
+    }
+
+    if (session.user.role !== "BOARD" && session.user.role !== "OWNER") {
+      return NextResponse.json({ error: "Brak uprawnień do przeglądania statystyk firmy." }, { status: 403 });
+    }
+
     const { searchParams } = new URL(req.url);
     const period = searchParams.get("period") || "all";
     const dateParam = searchParams.get("date");
@@ -39,41 +53,41 @@ export async function GET(req) {
     }
 
     const whereClause = conditions.join(" AND ");
-    const sql = `SELECT userId, distance, averageFuel, weight FROM Job WHERE ${whereClause}`;
-    const jobs = await dbAll(sql, params);
+    const jobStatsSql = `
+      SELECT 
+        COALESCE(SUM(distance), 0) AS totalDistance,
+        COALESCE(SUM((distance / 100.0) * IFNULL(averageFuel, 0)), 0) AS totalFuel,
+        COALESCE(SUM(weight), 0) AS totalWeight,
+        COUNT(id) AS totalJobs,
+        COUNT(DISTINCT userId) AS activeDrivers
+      FROM Job 
+      WHERE ${whereClause}
+    `;
 
-    let totalDistance = 0;
-    let totalFuel = 0;
-    let totalWeight = 0;
-    const uniqueDrivers = new Set();
+    const jobStats = await dbOne(jobStatsSql, params) || {};
 
-    jobs.forEach((job) => {
-      totalDistance += job.distance;
-      totalWeight += job.weight || 0;
-      uniqueDrivers.add(job.userId);
-      if (job.averageFuel) {
-        totalFuel += (job.distance / 100) * job.averageFuel;
-      }
-    });
+    const totalDistance = Number(jobStats.totalDistance) || 0;
+    const totalFuel = Number(jobStats.totalFuel) || 0;
+    const totalWeight = Number(jobStats.totalWeight) || 0;
+    const totalJobs = Number(jobStats.totalJobs) || 0;
+    const activeDrivers = Number(jobStats.activeDrivers) || 0;
 
-    const activeDrivers = uniqueDrivers.size;
     const fleetAverageFuel = totalDistance > 0 && totalFuel > 0 
       ? (totalFuel / totalDistance) * 100 
       : 0;
 
-    let settlementsSql = "SELECT netProfit FROM MonthlySettlement";
+    let settlementsSql = "SELECT COALESCE(SUM(netProfit), 0) AS totalRevenue FROM MonthlySettlement";
     if (setConditions.length > 0) {
       settlementsSql += " WHERE " + setConditions.join(" AND ");
     }
-    const settlements = await dbAll(settlementsSql, setParams);
-
-    const totalRevenue = settlements.reduce((sum, s) => sum + s.netProfit, 0);
+    const settlementStats = await dbOne(settlementsSql, setParams) || {};
+    const totalRevenue = Number(settlementStats.totalRevenue) || 0;
 
     return NextResponse.json({
       totalDistance,
       totalFuel,
       totalRevenue,
-      totalJobs: jobs.length,
+      totalJobs,
       totalWeight,
       activeDrivers,
       fleetAverageFuel

@@ -164,12 +164,22 @@ export async function PUT(req, { params }) {
     if (body.spotifyUrl !== undefined) updatedData.spotifyUrl = body.spotifyUrl;
     if (body.firstName !== undefined) updatedData.firstName = body.firstName;
 
-    // Do NOT overwrite user.image with the placeholder endpoint URL!
+    // Process image: only allow clean URLs or null; block raw Base64 data strings
     if (body.image !== undefined) {
-      if (typeof body.image === "string" && (body.image.includes("/api/user/") || body.image.endsWith("/avatar"))) {
-        // Skip placeholder URL
-      } else {
-        updatedData.image = body.image;
+      if (typeof body.image === "string" && body.image.trim() !== "") {
+        const trimmed = body.image.trim();
+        if (trimmed.startsWith("data:")) {
+          return NextResponse.json({ 
+            error: "Wysyłanie surowego Base64 jest zablokowane. Wgraj plik przez system uploadu." 
+          }, { status: 400 });
+        }
+        if (trimmed.includes("/api/user/") && trimmed.endsWith("/avatar")) {
+          // Skip placeholder URL to avoid recursion
+        } else {
+          updatedData.image = trimmed;
+        }
+      } else if (body.image === null || body.image === "") {
+        updatedData.image = null;
       }
     }
 

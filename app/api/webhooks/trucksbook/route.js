@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { dbOne, dbRun, generateId } from "../../../../lib/db";
+import { broadcastRealtimeEvent } from "../../../../lib/realtime/broadcast";
+import { getCoords } from "../../../../lib/coords";
 
 const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1028342826745991238/omJtvvECXjBINcEkR__ZVffaiWZyQnbPNFOPuAsRVr86THGs2XwQw_ZejJOGHuVD0ONy";
 
@@ -201,6 +203,33 @@ export async function POST(request) {
         }
         
         console.log(`Zapisano automatyczną trasę z TrucksBook: Kierowca ${driverName}, ${distance} km`);
+
+        // REALTIME BROADCAST: Notify RealtimeHub Durable Object after MariaDB commits
+        try {
+          const coords = await getCoords(endCity);
+          await broadcastRealtimeEvent({
+            type: "driver.location.updated",
+            driverId: user.id,
+            lat: coords ? coords[0] : 52.2297,
+            lng: coords ? coords[1] : 21.0122,
+            city: endCity,
+            speed: 0,
+            heading: 0,
+            truck: assignedTruck ? `${assignedTruck.brand} ${assignedTruck.model} (${assignedTruck.plate})` : null,
+            truckMileage: assignedTruck ? assignedTruck.mileage + distance : null,
+            lastJobDate: new Date().toISOString(),
+            ts: Math.floor(Date.now() / 1000)
+          }, "map");
+
+          await broadcastRealtimeEvent({
+            type: "driver.status.changed",
+            driverId: user.id,
+            status: "RESTING",
+            ts: Math.floor(Date.now() / 1000)
+          }, "map");
+        } catch (realtimeErr) {
+          console.error("[Realtime] Non-critical error broadcasting TrucksBook delivery:", realtimeErr);
+        }
       } else {
         console.log(`Zignorowano trasę: Nie znaleziono kierowcy o nazwie ${driverName} w bazie BMS.`);
       }
