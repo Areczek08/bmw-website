@@ -28,6 +28,7 @@ const RouteMap = dynamic(() => import("../components/RouteMap"), { ssr: false })
 export default function DispatcherPage() {
   const router = useRouter();
   const [jobs, setJobs] = useState([]);
+  const [stats, setStats] = useState({ totalJobs: 0, totalKm: 0 });
   const [loading, setLoading] = useState(true);
   const [selectedJob, setSelectedJob] = useState(null);
 
@@ -49,6 +50,9 @@ export default function DispatcherPage() {
       .then(data => {
         if (data.jobs) {
           setJobs(data.jobs);
+        }
+        if (data.stats) {
+          setStats(data.stats);
         }
         setLoading(false);
       })
@@ -127,11 +131,9 @@ export default function DispatcherPage() {
     return true;
   });
 
-  // Statystyki (Tylko Trasy i Dystans)
-  const statsTotalJobs = jobs.length;
-  const statsTotalKm = jobs
-    .filter(j => j.status === "APPROVED")
-    .reduce((sum, j) => sum + (j.distance || 0), 0);
+  // Statystyki globalne z bazy danych
+  const statsTotalJobs = stats.totalJobs;
+  const statsTotalKm = stats.totalKm;
 
   const resetFilters = () => {
     setSearchTerm("");
